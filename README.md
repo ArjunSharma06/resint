@@ -1,8 +1,10 @@
 # resint
 
+
 **A linter for research papers.** It reads a paper the way a compiler reads
 code — and reports what does not add up.
 
+[![CI](https://github.com/ArjunSharma06/resint/actions/workflows/ci.yml/badge.svg)](https://github.com/ArjunSharma06/resint/actions/workflows/ci.yml)
 ```console
 $ resint check paper.tex --repo ./code
 
