@@ -60,6 +60,20 @@ def check(ctx: Context) -> Iterator:
         if record is None:
             continue
 
+        # Only compare against a record we are certain is the right one.
+        # A DOI is a claim about a single registered work; a title search
+        # returns a best guess, and reporting "your year is wrong" against a
+        # guess produces exactly the failure this rule exists to avoid --
+        # confident, specific, and about the wrong paper. Title-matched
+        # records still count as existing, so bib/unresolved stays quiet;
+        # they just cannot support a claim about metadata.
+        if not record.authoritative:
+            ctx.abstain(
+                f"[{entry.key}] metadata not compared -- the record was found "
+                "by title search rather than by DOI, so it may be a different work"
+            )
+            continue
+
         if entry.year and record.year and entry.year != record.year:
             yield ctx.finding(
                 message=(

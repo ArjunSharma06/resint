@@ -19,6 +19,8 @@ ship.
 
 from __future__ import annotations
 
+import threading
+import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol
@@ -42,6 +44,16 @@ class Record:
     authors: tuple[str, ...] = ()
     venue: str = ""
     doi: str = ""
+    # How this record was found. A DOI is a claim about one registered
+    # record; a title search returns a best guess. Rules that compare
+    # metadata may only trust the former -- reporting a year as wrong
+    # against a record that might be a different paper entirely is worse
+    # than reporting nothing.
+    matched_by: str = "doi"
+
+    @property
+    def authoritative(self) -> bool:
+        return self.matched_by == "doi"
 
     def render(self) -> str:
         who = self.authors[0].split(",")[0] if self.authors else "?"
@@ -109,9 +121,87 @@ class CachingResolver:
 
     inner: Resolver
     _seen: dict[str, Resolution] = field(default_factory=dict, repr=False)
+    _lock: object = field(default_factory=threading.Lock, repr=False)
 
     def resolve(self, entry: BibEntry) -> Resolution:
         cache_key = entry.doi.lower() or f"{entry.title.lower()}|{entry.year}"
-        if cache_key not in self._seen:
-            self._seen[cache_key] = self.inner.resolve(entry)
-        return self._seen[cache_key]
+        with self._lock:
+            hit = self._seen.get(cache_key)
+        if hit is not None:
+            return hit
+
+        # Deliberately outside the lock: a slow lookup must not block every
+        # other worker. Two threads racing the same key costs one duplicate
+        # request, which is far cheaper than serialising the whole pool.
+        result = self.inner.resolve(entry)
+        with self._lock:
+            self._seen.setdefault(cache_key, result)
+            return self._seen[cache_key]
+
+
+# --- batch resolution ---------------------------------------------------
+
+
+def resolve_all(
+    resolver: Resolver,
+    entries,
+    *,
+    workers: int = 6,
+    budget: float = 40.0,
+    progress=None,
+) -> dict:
+    """Resolve a bibliography concurrently, under an overall time budget.
+
+    Sequential resolution is unusable at real bibliography sizes: thirty-five
+    entries against three indices is a hundred round trips, and at a second
+    each the tool appears to hang. A small pool fixes the latency; the budget
+    fixes the tail, where one unreachable index would otherwise hold the whole
+    run hostage.
+
+    Entries not finished inside the budget come back UNKNOWN, which the rules
+    already treat as "could not check" rather than "not found". Running out of
+    time can therefore never manufacture a finding -- it only shrinks what was
+    checked, and the report says so.
+    """
+    from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+
+    entries = list(entries)
+    results: dict = {}
+    if not entries:
+        return results
+
+    deadline = time.monotonic() + budget
+    done_count = 0
+
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        pending = {pool.submit(resolver.resolve, e): e for e in entries}
+        outstanding = set(pending)
+
+        while outstanding:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            finished, outstanding = wait(
+                outstanding, timeout=remaining, return_when=FIRST_COMPLETED
+            )
+            for future in finished:
+                entry = pending[future]
+                try:
+                    results[entry.key] = future.result()
+                except Exception as exc:  # a probe raised; not the paper's fault
+                    results[entry.key] = Resolution(
+                        Status.UNKNOWN, detail=f"lookup failed: {exc}"
+                    )
+                done_count += 1
+                if progress is not None:
+                    progress(done_count, len(entries))
+
+        for future in outstanding:
+            entry = pending[future]
+            future.cancel()
+            results[entry.key] = Resolution(
+                Status.UNKNOWN,
+                detail=f"not looked up within the {budget:g}s budget",
+            )
+
+    return results

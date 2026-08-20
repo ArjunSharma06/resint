@@ -127,9 +127,11 @@ Keys cited without an entry, entries never cited.
 
 Both halves are absence findings, and both are cheap: no network, no model, pure set arithmetic over what the two parsers found.
 
-The undefined-key half is more serious than it first looks. A `\cite{}` with no entry renders as a bold [?] in the PDF, which means it survived to submission without anyone reading the compiled output -- and it is a frequent companion of references that were never real to begin with.
+The undefined-key half is more serious than it first looks. A ``\cite{}`` with no entry renders as a bold [?] in the PDF, which means it survived to submission without anyone reading the compiled output -- and it frequently travels with references that were never real to begin with.
 
-**Cannot detect.** Entries kept deliberately for a camera-ready version, and keys supplied by a bibliography style rather than the .bib file. Neither is distinguishable from an oversight by inspection alone.
+The uncited half is grouped into a single finding rather than one per entry. A working bibliography routinely carries a dozen entries the draft has not reached yet; emitting thirteen separate findings for that buries everything else in the report and teaches the reader to skim past the whole tool. It is one situation, so it is one finding.
+
+**Cannot detect.** Entries kept deliberately for a camera-ready version or a companion paper, and keys supplied by a bibliography style rather than the .bib file. Neither is distinguishable from an oversight by inspection.
 
 <sub>Requires: `paper.citations`, `paper.bib`</sub>
 

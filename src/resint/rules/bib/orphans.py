@@ -3,10 +3,16 @@
 Both halves are absence findings, and both are cheap: no network, no model,
 pure set arithmetic over what the two parsers found.
 
-The undefined-key half is more serious than it first looks. A `\\cite{}` with
+The undefined-key half is more serious than it first looks. A ``\\cite{}`` with
 no entry renders as a bold [?] in the PDF, which means it survived to
-submission without anyone reading the compiled output -- and it is a frequent
-companion of references that were never real to begin with.
+submission without anyone reading the compiled output -- and it frequently
+travels with references that were never real to begin with.
+
+The uncited half is grouped into a single finding rather than one per entry.
+A working bibliography routinely carries a dozen entries the draft has not
+reached yet; emitting thirteen separate findings for that buries everything
+else in the report and teaches the reader to skim past the whole tool. It is
+one situation, so it is one finding.
 """
 
 from __future__ import annotations
@@ -15,6 +21,10 @@ from typing import Iterator
 
 from ..registry import Context, rule
 
+# Beyond this many names, the message stops being scannable and the full list
+# belongs in JSON output instead.
+_NAMED = 8
+
 
 @rule(
     id="bib/orphans",
@@ -22,9 +32,9 @@ from ..registry import Context, rule
     tier="deterministic",
     requires=["paper.citations", "paper.bib"],
     cannot_detect=(
-        "Entries kept deliberately for a camera-ready version, and keys "
-        "supplied by a bibliography style rather than the .bib file. Neither "
-        "is distinguishable from an oversight by inspection alone."
+        "Entries kept deliberately for a camera-ready version or a companion "
+        "paper, and keys supplied by a bibliography style rather than the .bib "
+        "file. Neither is distinguishable from an oversight by inspection."
     ),
 )
 def check(ctx: Context) -> Iterator:
@@ -33,8 +43,7 @@ def check(ctx: Context) -> Iterator:
     # No bibliography means nothing was looked at, which is not the same as
     # looking and finding nothing. Reporting every citation as undefined
     # because no .bib was supplied would be the absence-finding equivalent of
-    # calling a reference fabricated because the network was down. The run
-    # records "bibliography not checked" instead.
+    # calling a reference fabricated because the network was down.
     if not entries:
         return
 
@@ -42,9 +51,10 @@ def check(ctx: Context) -> Iterator:
     for c in ctx.paper.citations:
         cited.setdefault(c.key, []).append(c)
 
-    bib_label = ctx.paper.bib[0].span.source.id if ctx.paper.bib else "the bibliography"
+    bib_label = ctx.paper.bib[0].span.source.id
 
-    # Cited, but no entry to render.
+    # Cited, but no entry to render. One finding each: every occurrence is a
+    # distinct broken reference in the compiled document.
     for key in sorted(cited.keys() - entries.keys()):
         uses = cited[key]
         times = "once" if len(uses) == 1 else f"{len(uses)} times"
@@ -59,16 +69,21 @@ def check(ctx: Context) -> Iterator:
             fix=f"Add an entry for [{key}], or remove the citation.",
         )
 
-    # Defined, but never referenced.
-    paper_label = "the paper"
-    for key in sorted(entries.keys() - cited.keys()):
-        entry = entries[key]
-        yield ctx.finding(
-            message=(
-                f"[{key}] is defined in {bib_label} but never cited. "
-                "It will not appear in the reference list."
-            ),
-            anchors=[entry.span],
-            absent_from=paper_label,
-            fix=f"Cite [{key}] where it is relevant, or drop the entry.",
-        )
+    # Defined, but never referenced. One finding for all of them.
+    unused = sorted(entries.keys() - cited.keys())
+    if not unused:
+        return
+
+    shown = ", ".join(f"[{k}]" for k in unused[:_NAMED])
+    more = "" if len(unused) <= _NAMED else f", and {len(unused) - _NAMED} more"
+    count = "1 entry is" if len(unused) == 1 else f"{len(unused)} entries are"
+
+    yield ctx.finding(
+        message=(
+            f"{count} defined in {bib_label} but never cited, so they will not "
+            f"appear in the reference list: {shown}{more}."
+        ),
+        anchors=[entries[k].span for k in unused[:3]],
+        absent_from="the paper",
+        fix="Cite them where relevant, or drop them from the bibliography.",
+    )

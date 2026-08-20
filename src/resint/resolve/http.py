@@ -16,11 +16,12 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from ..ir.paper import BibEntry
 from ..parse.bibtex import fold
@@ -31,19 +32,50 @@ USER_AGENT = "resint/0.1 (https://github.com/ArjunSharma06/resint; open-source p
 _WORD = re.compile(r"[a-z0-9]+")
 _STOP = frozenset({"a", "an", "the", "of", "for", "and", "on", "in", "with", "to"})
 
-# A search hit below this token overlap is a different work, not a match.
-_MATCH_FLOOR = 0.7
+# Jaccard, not overlap-over-the-smaller-set. The latter scores a short
+# title fully contained in a longer one as a near-perfect match, which is
+# how "Linformer: Self-Attention with Linear Complexity" matched "Mult-Pool
+# Self Attention: a lightweight attention with linear complexity" at 0.80.
+# Jaccard scores that pair 0.50 and rejects it.
+_MATCH_FLOOR = 0.75
 
 
 def _tokens(title: str) -> set[str]:
     return {w for w in _WORD.findall(fold(title).lower()) if w not in _STOP}
 
 
-def title_matches(left: str, right: str) -> bool:
+def title_similarity(left: str, right: str) -> float:
+    """Symmetric token similarity. Both titles must largely agree."""
     a, b = _tokens(left), _tokens(right)
     if not a or not b:
-        return False
-    return len(a & b) / min(len(a), len(b)) >= _MATCH_FLOOR
+        return 0.0
+    return len(a & b) / len(a | b)
+
+
+def title_matches(left: str, right: str) -> bool:
+    return title_similarity(left, right) >= _MATCH_FLOOR
+
+
+def _best(entry_title: str, candidates):
+    """The closest candidate above the floor, or None.
+
+    Search endpoints rank by their own relevance, which is not ours -- the
+    first result over the line is regularly a worse match than the third.
+    """
+    scored = [
+        (title_similarity(entry_title, r.title), r) for r in candidates if r
+    ]
+    scored = [(s, r) for s, r in scored if s >= _MATCH_FLOOR]
+    if not scored:
+        return None
+    return max(scored, key=lambda pair: pair[0])[1]
+
+
+def _as_title_match(record):
+    """Mark a record as found by search rather than by identifier."""
+    if record is None:
+        return None
+    return replace(record, matched_by="title")
 
 
 def normalize_doi(raw: str) -> str:
@@ -59,9 +91,10 @@ class HttpResolver:
     """Queries the public indices in order, stopping at the first real match."""
 
     mailto: str | None = None
-    timeout: float = 6.0
+    timeout: float = 5.0
     pause: float = 0.05
     _last_call: float = field(default=0.0, repr=False)
+    _pace: object = field(default_factory=threading.Lock, repr=False)
 
     @property
     def indices(self) -> tuple[str, ...]:
@@ -71,9 +104,12 @@ class HttpResolver:
 
     def _get(self, url: str) -> dict | None:
         """Fetch JSON. Returns None on any failure -- caller maps that to UNKNOWN."""
-        gap = time.monotonic() - self._last_call
-        if gap < self.pause:
-            time.sleep(self.pause - gap)
+        # Serialise only the pacing decision, never the request itself.
+        with self._pace:
+            gap = time.monotonic() - self._last_call
+            if gap < self.pause:
+                time.sleep(self.pause - gap)
+            self._last_call = time.monotonic()
 
         agent = USER_AGENT
         if self.mailto:
@@ -87,8 +123,6 @@ class HttpResolver:
                 return json.loads(response.read().decode("utf-8"))
         except (urllib.error.URLError, TimeoutError, ValueError, OSError):
             return None
-        finally:
-            self._last_call = time.monotonic()
 
     # --- per-index adapters ---------------------------------------------
 
@@ -108,11 +142,11 @@ class HttpResolver:
         payload = self._get(f"https://api.crossref.org/works?{query}")
         if not payload:
             return None
-        for item in payload.get("message", {}).get("items", []):
-            record = _from_crossref(item)
-            if record and title_matches(entry.title, record.title):
-                return record
-        return None
+        candidates = [
+            _from_crossref(item)
+            for item in payload.get("message", {}).get("items", [])
+        ]
+        return _as_title_match(_best(entry.title, candidates))
 
     def _openalex(self, entry: BibEntry) -> Record | None:
         if entry.doi:
@@ -128,11 +162,8 @@ class HttpResolver:
         payload = self._get(f"https://api.openalex.org/works?{query}")
         if not payload:
             return None
-        for item in payload.get("results", []):
-            record = _from_openalex(item)
-            if record and title_matches(entry.title, record.title):
-                return record
-        return None
+        candidates = [_from_openalex(item) for item in payload.get("results", [])]
+        return _as_title_match(_best(entry.title, candidates))
 
     def _arxiv(self, entry: BibEntry) -> Record | None:
         if not entry.title:
@@ -145,11 +176,11 @@ class HttpResolver:
         if raw is None:
             return None
         titles = re.findall(r"<title>(.*?)</title>", raw, re.DOTALL)
-        for candidate in titles[1:]:  # first <title> is the feed itself
-            cleaned = " ".join(candidate.split())
-            if title_matches(entry.title, cleaned):
-                return Record(source="arxiv", title=cleaned)
-        return None
+        candidates = [
+            Record(source="arxiv", title=" ".join(t.split()), matched_by="title")
+            for t in titles[1:]  # the first <title> is the feed itself
+        ]
+        return _best(entry.title, candidates)
 
     def _get_text(self, url: str) -> str | None:
         agent = USER_AGENT

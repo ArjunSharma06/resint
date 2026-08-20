@@ -67,8 +67,23 @@ def _cmd_check(args: argparse.Namespace) -> int:
         else CachingResolver(HttpResolver(mailto=args.mailto))
     )
 
+    # Resolution is the only phase that can take real time, so it is the
+    # only one that reports progress. Written to stderr so --format json
+    # and --format sarif stay pipeable.
+    def progress(done: int, total: int) -> None:
+        if args.format == "term" and sys.stderr.isatty():
+            tail = "" if done < total else "\r" + " " * 44 + "\r"
+            print(
+                f"\r  resolving references\u2026 {done}/{total}",
+                end=tail,
+                file=sys.stderr,
+                flush=True,
+            )
+
     started = time.perf_counter()
-    paper = paper_from_path(target, bib=args.bib, resolver=resolver)
+    paper = paper_from_path(
+        target, bib=args.bib, resolver=resolver, progress=progress
+    )
 
     # Only build the repository IR when a repository was actually given.
     # Walking a tree nobody asked about is the kind of cost that makes a
@@ -239,7 +254,13 @@ def main(argv: list[str] | None = None) -> int:
     init.set_defaults(fn=_cmd_init)
 
     args = parser.parse_args(argv)
-    return args.fn(args)
+    try:
+        return args.fn(args)
+    except KeyboardInterrupt:
+        # A traceback here tells the user nothing except that the tool is
+        # amateurish. 130 is the conventional shell code for SIGINT.
+        print("\nresint: interrupted", file=sys.stderr)
+        return 130
 
 
 if __name__ == "__main__":

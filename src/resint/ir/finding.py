@@ -133,6 +133,15 @@ class Finding:
             where = a.locate()
             if where not in seen:
                 seen.append(where)
+
+        # A grouped finding can carry several anchors, and chaining all of
+        # them produces a location line nobody reads. Two sides is what makes
+        # a finding checkable; beyond that the count is enough, and every
+        # anchor is still present in JSON and SARIF.
+        if len(seen) > 2:
+            extra = len(seen) - 2
+            seen = seen[:2] + [f"+{extra} more"]
+
         if self.absent_from:
             seen.append(f"{self.absent_from} (absent)")
         return " <-> ".join(seen)

@@ -10,7 +10,35 @@ that the API is not stable before `1.0`.
 
 ## [Unreleased]
 
-Nothing yet.
+Fixes from the first run against a real 48 KB paper with a 35-entry
+bibliography. None of these were caught by the corpus fixtures, which is the
+argument for using the tool on real work early.
+
+### Fixed
+
+- **Reference resolution appeared to hang.** Lookups ran sequentially: 35
+  entries against 3 indices is over a hundred round trips, and the run had to
+  be interrupted. Resolution is now concurrent with an overall time budget,
+  and reports progress. Entries not reached inside the budget come back
+  UNKNOWN, so running out of time can never manufacture a finding.
+- **`bib/metadata-drift` reported eleven false positives.** Title search used
+  overlap over the smaller token set, so a short title contained in a longer
+  one scored near 1.0 — "Linformer: Self-Attention with Linear Complexity"
+  matched "Mult-Pool Self Attention: a lightweight attention with linear
+  complexity" at 0.80. Now uses Jaccard similarity, and picks the *best*
+  candidate rather than the first above the threshold.
+- **Drift now requires an authoritative record.** A DOI identifies one
+  registered work; a title search returns a guess. Reporting someone's
+  metadata as wrong against a guess is exactly the failure the rule exists to
+  avoid, so title-matched records abstain with a stated reason. They still
+  count as existing, so `bib/unresolved` stays quiet.
+- **`bib/orphans` flooded the report.** Thirteen uncited entries produced
+  thirteen findings and buried everything else. Uncited entries are now one
+  grouped finding; undefined keys stay separate, since each is a distinct
+  broken reference in the compiled document.
+- **Ctrl+C printed a traceback.** Now exits cleanly with code 130.
+- **Location lines with several anchors were unreadable.** Display truncates
+  past two with a count; every anchor is still present in JSON and SARIF.
 
 ## [0.1.0] — first public release
 

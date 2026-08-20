@@ -17,7 +17,7 @@ from pathlib import Path
 
 from ..ir.paper import Paper, TextSlice
 from ..ir.span import Source
-from ..resolve.base import NullResolver, Resolver, Status
+from ..resolve.base import NullResolver, Resolver, Status, resolve_all
 from .bibtex import parse as parse_bibtex
 from .citations import extract_citations
 from .extract import (
@@ -57,6 +57,7 @@ def paper_from_latex(
     bib_text: str | None = None,
     bib_id: str = "refs.bib",
     resolver: Resolver | None = None,
+    progress=None,
 ) -> Paper:
     """Build a Paper, filling only the slices in ``needs``."""
     src = Source(source_id, "latex", path=path or source_id)
@@ -123,12 +124,12 @@ def paper_from_latex(
 
     if "paper.resolutions" in wanted and paper.bib:
         active = resolver or NullResolver()
-        unknown = 0
-        for entry in paper.bib:
-            resolution = active.resolve(entry)
-            paper.resolutions[entry.key] = resolution
-            if resolution.status is Status.UNKNOWN:
-                unknown += 1
+        paper.resolutions = resolve_all(active, paper.bib, progress=progress)
+        unknown = sum(
+            1
+            for r in paper.resolutions.values()
+            if r.status is Status.UNKNOWN
+        )
         if unknown:
             noun = "reference" if unknown == 1 else "references"
             paper.unchecked.append(
@@ -144,6 +145,7 @@ def paper_from_path(
     needs: set[str] | None = None,
     bib: str | Path | None = None,
     resolver: Resolver | None = None,
+    progress=None,
 ) -> Paper:
     p = Path(path)
     bib_path = Path(bib) if bib else find_bibliography(p)
@@ -160,4 +162,5 @@ def paper_from_path(
         bib_text=bib_text,
         bib_id=bib_path.name if bib_path else "refs.bib",
         resolver=resolver,
+        progress=progress,
     )
