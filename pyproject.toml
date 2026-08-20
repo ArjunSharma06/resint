@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "resint"
+version = "0.1.0"
+description = "A linter for research papers."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+keywords = [
+    "research", "linter", "reproducibility", "statistics", "bibliography",
+    "latex", "peer-review", "meta-science", "static-analysis",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Text Processing :: Markup :: LaTeX",
+    "Typing :: Typed",
+]
+
+# Deliberately empty. The install staying dependency-free is a feature people
+# notice, and every rule so far is arithmetic, parsing, or stdlib HTTP.
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.urls]
+Homepage = "https://github.com/ArjunSharma06/resint"
+Issues = "https://github.com/ArjunSharma06/resint/issues"
+Contributing = "https://github.com/ArjunSharma06/resint/blob/main/CONTRIBUTING.md"
+
+[project.scripts]
+resint = "resint.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/resint"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/", "tests/", "corpus/", "README.md", "CONTRIBUTING.md", "LICENSE"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src", "tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 88
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+ignore = ["E501"]

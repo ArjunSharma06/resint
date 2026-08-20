@@ -1,0 +1,60 @@
+% Negative fixture. Everything here is internally consistent. The suite
+% asserts zero findings, which is the stronger of the two guarantees: a rule
+% that fires here is a false positive, and false positives are what end this
+% kind of project.
+\documentclass{article}
+\begin{document}
+
+\section{Method}
+
+Participants completed a 3-item scale adapted from prior
+work~\cite{dosovitskiy2020,hu2021lora} and from~\cite{accented2019}.
+We train with a learning rate of 3e-4 and batch size 128 for 100 epochs,
+averaged over 5 random seeds.
+% Every value agrees with the repository, and the seed is read from an
+% argument, so it varies across runs. Nothing here may fire.
+
+\section{Results}
+
+Our approach reaches 93.8 accuracy, matching the table exactly.
+
+\begin{table}[t]
+  \caption{Accuracy and F1 on the benchmark.}
+  \begin{tabular}{lcc}
+    \toprule
+    Method & Accuracy & F1 \\
+    \midrule
+    Baseline & 91.4 & 90.2 \\
+    Ours     & 93.8 & 92.6 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}
+  \caption{Dataset composition.}
+  \begin{tabular}{lr}
+    Split & Count \\
+    Train & 800 \\
+    Val   & 100 \\
+    Test  & 100 \\
+    Total & 1000 \\
+  \end{tabular}
+\end{table}
+
+The group mean was M = 3.45 with N = 20 participants.
+% Reachable: 69/20 = 3.45 exactly.
+
+On the 3-item scale the mean was 3.47 with N = 20 participants.
+% Reachable once granularity is 60 rather than 20.
+
+The effect was reliable, $t(20) = 2.086$, $p = .05$.
+The omnibus test held, $F(1, 20) = 4.35$, $p = .05$.
+The association was strong, $\chi^2(1) = 6.63$, $p = .01$.
+
+Using a one-tailed test, $t(20) = 1.725$, $p = .05$.
+% Consistent one-tailed; would be inconsistent if read as two-tailed.
+
+Across two subgroups (N = 20 and N = 25) the mean was 3.47, which cannot be
+checked because the sentence names two sample sizes.
+
+\end{document}

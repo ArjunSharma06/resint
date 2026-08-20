@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Windows is in the matrix deliberately: the first output bug in this
+        # project was a UnicodeEncodeError on a cp1252 console, which no
+        # amount of Linux testing would have caught.
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev]"
+      - run: pytest -q
+
+  no-network:
+    # The suite must never depend on Crossref being up. This job proves it by
+    # failing any test that opens a socket.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e ".[dev]" pytest-socket
+      - run: pytest -q --disable-socket
+
+  docs:
+    # docs/rules.md repeats what the registry already knows, so it is
+    # generated. This fails the build when the committed copy drifts.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python tools/gen_rule_docs.py --check
+
+  self-check:
+    # resint runs on its own corpus. The clean fixture must stay silent.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -e .
+      - name: Clean fixture must produce no findings
+        run: resint check corpus/clean/paper.tex --offline --fail-on low
+      - name: Planted fixture must produce findings
+        run: |
+          if resint check corpus/planted/paper.tex --offline --fail-on high; then
+            echo "::error::planted fixture produced no high-severity findings"
+            exit 1
+          fi

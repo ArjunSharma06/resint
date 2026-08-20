@@ -1,0 +1,16 @@
+# Normalize line endings in the repository.
+#
+# Without this, a Windows checkout commits CRLF and every contributor on
+# Linux or macOS sees the whole tree as modified. Text is stored as LF and
+# checked out native.
+* text=auto eol=lf
+
+# Fixtures are compared byte-for-byte and their line numbers are asserted by
+# tests/test_pipeline.py. Line-ending translation would shift every offset.
+corpus/** text eol=lf
+*.tex text eol=lf
+*.bib text eol=lf
+
+*.png binary
+*.jpg binary
+*.pdf binary

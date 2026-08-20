@@ -1,0 +1,4 @@
+# Agrees with the paper in every value.
+learning_rate: 3e-4
+batch_size: 128
+epochs: 100

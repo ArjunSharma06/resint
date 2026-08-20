@@ -1,0 +1,69 @@
+% Positive fixture. Every defect below is planted deliberately and is
+% asserted by tests/test_pipeline.py. Line numbers are load-bearing: if the
+% offset map drifts, those assertions fail, which is the point.
+\documentclass{article}
+\newcommand{\method}{RankAdapt}
+\begin{document}
+
+\section{Method}
+
+We introduce \method, a low-rank adaptation scheme for vision
+transformers~\cite{dosovitskiy2020}, building on prior
+work~\cite{hu2021lora,zhang2023adaptive}. Ratings were collected from a
+single-item instrument. We train with a learning rate of 3e-4 and batch
+size 128 for 100 epochs. All results are averaged over 5 random seeds.
+% PLANTED: configs/base.yaml overrides the learning rate to 1e-4.
+% PLANTED: train.py fixes seed=42 and never varies it.
+See also~\cite{obscure2018} and
+\cite{missing_entry2022}.
+% PLANTED: missing_entry2022 is cited but has no bibliography entry.
+
+\section{Results}
+
+Our approach reaches 94.2 accuracy on the benchmark.
+% PLANTED: Table 1 reports 93.8 for the same quantity.
+
+\begin{table}[t]
+  \centering
+  \caption{Accuracy and F1 on the benchmark.}
+  \label{tab:main}
+  \begin{tabular}{lcc}
+    \toprule
+    Method & Accuracy & F1 \\
+    \midrule
+    Baseline      & 91.4 & 90.2 \\
+    \textbf{Ours} & 93.8 & 92.6 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\begin{table}
+  \caption{Dataset composition.}
+  \begin{tabular}{lr}
+    Split & Count \\
+    Train & 800 \\
+    Val   & 100 \\
+    Test  & 100 \\
+    Total & 1200 \\
+  \end{tabular}
+\end{table}
+% PLANTED: 800 + 100 + 100 = 1000, not 1200.
+
+Participants rated the outputs favourably (M = 3.47, SD = 0.82, N = 20).
+% PLANTED: 3.47 is unreachable from 20 integer responses (3.45 / 3.50).
+
+The improvement over the baseline was reliable, $t(20) = 1.20$, $p = .03$.
+% PLANTED: t(20)=1.20 recomputes to p = .244 -- a decision error at .05.
+
+A secondary contrast was also examined, $t(20) = 2.086$, $p = .01$.
+% PLANTED: recomputes to .0500 -- inconsistent, but both sides significant.
+
+\begin{figure}
+  \includegraphics{loss.png}
+  This caption text must never reach the extractors.
+\end{figure}
+
+The omnibus test was significant, $F(1, 20) = 4.35$, $p = .05$.
+% CLEAN: must not fire.
+
+\end{document}

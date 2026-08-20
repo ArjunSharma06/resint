@@ -1,0 +1,57 @@
+name: Release
+
+# Publishes to PyPI on a version tag, using Trusted Publishing (OIDC).
+# No API token is stored anywhere: PyPI verifies the workflow identity
+# directly, so there is no secret to leak or rotate.
+#
+# The publisher registered on PyPI must match this file exactly --
+# owner, repository, this filename, and the environment below.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build
+        run: |
+          pip install build twine
+          python -m build
+          twine check dist/*
+
+      # A release that cannot pass its own suite has no business shipping.
+      - name: Verify the built wheel actually works
+        run: |
+          pip install dist/*.whl
+          resint --version
+          resint rules --format json > /dev/null
+          resint check corpus/clean/paper.tex --offline --fail-on low
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write        # required for Trusted Publishing
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@release/v1

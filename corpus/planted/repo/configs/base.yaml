@@ -1,0 +1,10 @@
+# PLANTED: overrides the argparse default of 3e-4. A run uses 1e-4, but the
+# paper states 3e-4. This is the hyperparameter-drift case.
+learning_rate: 1e-4
+batch_size: 128
+epochs: 100
+dropout: 0.1
+
+model:
+  hidden_size: 768
+  num_layers: 12

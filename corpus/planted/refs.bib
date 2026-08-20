@@ -1,0 +1,45 @@
+% Positive fixture bibliography. Defects are planted and asserted by
+% tests/test_pipeline.py. Resolution answers come from a StaticResolver, so
+% no test touches the network.
+
+@inproceedings{dosovitskiy2020,
+  title     = {An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale},
+  author    = {Dosovitskiy, Alexey and Beyer, Lucas},
+  booktitle = {ICLR},
+  year      = {2021},
+  doi       = {10.48550/arXiv.2010.11929}
+}
+
+@article{zhang2023adaptive,
+  title   = {Adaptive Rank Selection for Parameter-Efficient Transfer},
+  author  = {Zhang, Wei and Kumar, Priya},
+  journal = {Journal of Machine Learning Research},
+  year    = {2023},
+  doi     = {10.5555/9999999.9999999}
+}
+% PLANTED: resolves in no index. The DOI is not registered.
+
+@article{hu2021lora,
+  title   = {LoRA: Low-Rank Adaptation of Large Language Models},
+  author  = {Hu, Edward and Shen, Yelong},
+  journal = {arXiv preprint},
+  year    = {2019},
+  doi     = {10.48550/arXiv.2106.09685}
+}
+% PLANTED: entry says 2019; the resolved record says 2021.
+
+@article{never_cited2020,
+  title   = {A Perfectly Real Paper Nobody Cited Here},
+  author  = {Okonkwo, Ada},
+  journal = {Nature Methods},
+  year    = {2020}
+}
+% PLANTED: defined but never cited.
+
+@phdthesis{obscure2018,
+  title  = {Local Methods in Regional Contexts},
+  author = {Lindqvist, Sara},
+  school = {Uppsala University},
+  year   = {2018}
+}
+% PLANTED: unresolvable, but a thesis -- must report at low severity.
