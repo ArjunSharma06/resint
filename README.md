@@ -1,5 +1,10 @@
 # resint
 
+[![CI](https://github.com/ArjunSharma06/resint/actions/workflows/ci.yml/badge.svg)](https://github.com/ArjunSharma06/resint/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/resint)](https://pypi.org/project/resint/)
+[![Python](https://img.shields.io/pypi/pyversions/resint)](https://pypi.org/project/resint/)
+[![License](https://img.shields.io/badge/licence-Apache--2.0-blue)](LICENSE)
+
 **A linter for research papers.** It reads a paper the way a compiler reads
 code — and reports what does not add up.
 
