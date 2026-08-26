@@ -261,14 +261,56 @@ disables even that, and the reference rules abstain rather than guess.
 | [docs/rule-authoring.md](docs/rule-authoring.md) | How to write a rule, and the bar it has to clear |
 | [CHANGELOG.md](CHANGELOG.md) | What shipped, when |
 
+## Bring your own model (optional)
+
+Thirteen rules are arithmetic and need nothing. Six more read a paper against
+itself, and against the papers it cites:
+
+| Rule | Catches |
+|---|---|
+| `bib/citation-support` | You cite [42] for something [42] contradicts |
+| `claim/overreach` | "Significantly outperforms", by three tenths of a point |
+| `eval/baseline-fairness` | Your method got four times the training budget |
+| `claim/scope-creep` | "Across diverse domains", meaning two datasets |
+| `claim/unimplemented` | A claimed capability with no trace in the repository |
+| `claim/unsupported` | An abstract promising what the paper never returns to |
+
+These need a model, and **you bring it** — resint has no key and no account,
+and with none configured every one of these is skipped and *reported as
+skipped*, never silently passed.
+
+```yaml
+# .resint.yml
+model:
+  provider: groq          # or openai, gemini, deepseek, openrouter, ollama
+  name: openai/gpt-oss-120b
+```
+
+The key comes from the environment (`GROQ_API_KEY`, `OPENAI_API_KEY`,
+`GEMINI_API_KEY`, …), **never from this file** — it is committed alongside
+your paper. Ollama runs locally, needs no key, and sends nothing anywhere.
+
+**The model never renders the verdict.** It extracts a correspondence and
+quotes it verbatim; code then locates every quote in the real source, does the
+arithmetic, and decides. A quote that appears nowhere is discarded, so a
+hallucination cannot become a finding — and neither can an instruction
+injected into a paper, because invented text cannot supply the second anchor
+every finding requires.
+
+Answers are cached to disk, so checking the same paper twice costs one set of
+calls. And model findings **do not fail your build** unless you pass
+`--fail-on-model`: they involve judgement, and a misfire there should not cost
+the thirteen deterministic rules your trust.
+
 ## Status
 
-**Early — v0.1.** Thirteen of eighteen planned rules are implemented and
-tested. The API is not stable yet.
+**Early — v0.1.** Nineteen rules — thirteen deterministic, six
+model-assisted. The API is not stable yet.
 
-Next: `repro/dead-asset`, and the model-assisted tier (`claim/`, `eval/`) —
-which checks whether the code implements what the paper claims. That tier
-needs a provider and stays **optional**; everything above runs with no key.
+The model tier is new and its precision is still being measured. It will be
+reported **per model, with a range** when it is, because a local 8B and a
+frontier model are different instruments and one averaged number across them
+would be dishonest.
 
 Found a false positive? [That's the most valuable issue you can
 open](https://github.com/ArjunSharma06/resint/issues) — each one becomes a

@@ -19,7 +19,7 @@ Severity shown is the **default**. Rules may escalate or reduce per finding —
 a *p*-value off in the fourth decimal is a typo, while one that flips a
 significance decision changes what the paper claims.
 
-**13 rules** — 13 run with no API key, 5 need `--repo`.
+**19 rules** — 13 run with no API key, 6 need `--repo`.
 
 ## `numbers/` — Internal consistency
 
@@ -104,6 +104,26 @@ The bar is deliberately set at document level rather than sentence level. A pape
 ## `bib/` — Citation integrity
 
 Resolution against Crossref, OpenAlex, arXiv and Semantic Scholar. A lookup that fails is reported as unchecked, never as a missing reference.
+
+### `bib/citation-support`
+
+**high** · model-assisted
+
+You cite [42] for something [42] contradicts.
+
+The check every reviewer does by hand and nobody has time to do exhaustively: open the cited paper, find the relevant part, see whether it says what the citing sentence claims it says.
+
+**Contradiction only, never absence.** The distinction is the whole design. "The cited paper does not state this" is not a finding here, because a paper says a great many things and neither retrieval nor a model can establish that none of them is the one meant -- a paraphrase two sections away would be missed, and the report would be wrong. "The cited paper states the opposite" is a finding, because a paper does not contradict itself: if the retrieved passage says quadratic, no other passage makes it linear.
+
+That leaves the errors worth catching, which are contradictions anyway. The documented cases of citation distortion are a study that found no effect cited as evidence of an effect, a hedged finding cited as settled, a result in mice cited as a result in humans, a superseded number cited as current.
+
+This is the first rule in resint where a model renders a judgement code cannot compute. Semantic contradiction is not arithmetic. The safeguard is not that code checks the judgement -- it cannot -- but that both sides are quoted and located in real text before any finding exists, so a reader adjudicates it in seconds rather than trusting the model. A quote that is not in the cited paper is a hallucination and produces nothing; a quote appearing several times identifies no passage and produces nothing.
+
+Both anchors point into the author's own files -- the citing sentence and the bibliography entry -- so a finding here is verifiable by exactly the same standard as a deterministic one. The evidence from the cited paper travels in the message, where it is quoted rather than asserted.
+
+**Cannot detect.** References whose full text cannot be read: anything paywalled, and open-access work published only as a PDF, since resint has no PDF reader. Coverage is good for arXiv and PubMed Central subjects and poor elsewhere. It also cannot report that a cited paper merely fails to support a claim -- only that it contradicts one -- because establishing that a paper never makes a claim would require reading all of it and being certain no paraphrase was missed. Contradictions expressed across several passages rather than in one are missed, as is anything the retrieval step did not surface.
+
+<sub>Requires: `paper.claims`, `paper.bib`, `paper.cited_texts`</sub>
 
 ### `bib/metadata-drift`
 
@@ -232,3 +252,99 @@ The threshold is proportional rather than absolute. One unpinned package among t
 **Cannot detect.** Whether the unpinned versions still resolve to something that works, and environments captured outside the repository in a container image or a cluster module file.
 
 <sub>Requires: `repo.deps`, `repo.lockfiles`</sub>
+
+## `claim/` — Semantic checks
+
+Model-assisted. Optional; skipped without a provider.
+
+### `claim/overreach`
+
+**med** · model-assisted
+
+"significantly outperforms", by three tenths of a point.
+
+The gap between what a results table shows and what the abstract says about it. Not fraud, usually: a paper is written over months, the abstract is written first and last, and the number it was describing moved.
+
+The division of labour is the point, and it is the governing rule of this tier applied exactly. Deciding whether 94.2 against 93.9 is a large improvement is arithmetic, so **code does it** -- a model asked that question gives a fluent answer with no defensible threshold behind it. What a model is genuinely needed for is matching prose to cells: working out that "our approach" is the row called Ours-Large and that "the strongest baseline" is the third column of Table 2. That is reading comprehension over messy typesetting, and code is poor at it.
+
+So the model extracts a correspondence and quotes it. Code checks the numbers are really in the table, computes the margin, compares it against a threshold written down here in the open, and decides. The model never renders the verdict.
+
+The strength of the claim is code's judgement too, from a closed vocabulary. "Substantially outperforms" is a strong claim; "improves on" is not, and a paper is entitled to report a small improvement as a small improvement.
+
+**Cannot detect.** Claims whose evidence is not in a table this parser could read: results stated only in prose, in a figure, or in a table too irregular to parse. It compares two numbers against each other and so cannot tell whether a margin is significant in the statistical sense, which needs variance the table usually does not report. A paper reporting a small improvement in modest language is correct and is not flagged, and a large margin is never flagged however it is described.
+
+<sub>Requires: `paper.text`, `paper.tables`</sub>
+
+### `claim/scope-creep`
+
+**med** · model-assisted
+
+"across diverse domains", meaning two datasets.
+
+An abstract written to be read by everyone, describing experiments run on a narrower slice than the language implies. "General-purpose", "across a wide range of tasks", "domain-agnostic" -- then a results section covering CIFAR-10 and CIFAR-100, which are the same dataset twice.
+
+This is the most reputationally expensive kind of overreach, because it is the sentence a reviewer quotes back. It is also the most fixable: the experiments are usually fine and the sentence needs one adjective removed.
+
+Code owns both decisions. Whether the language is a breadth claim comes from a closed vocabulary checked against the quoted sentence; whether the evaluation is narrow is counting. The model's job is to list what was actually evaluated on, which means reading a results section, table captions and an appendix and knowing that "CIFAR-10/100" is two entries while "the GLUE benchmark" is one name covering nine tasks -- a judgement about how the field talks, which is exactly where a model earns its place.
+
+Every name it reports is then checked against the paper's own text. A dataset the model invented is not counted, in either direction.
+
+**Cannot detect.** Breadth claimed in language outside the vocabulary this rule recognises, and breadth that is genuinely justified -- a paper evaluating on two datasets that really do span its claimed domains is flagged the same as one that does not, because counting cannot tell those apart. It counts what the paper reports rather than what was run, so evaluations described only in a figure or an appendix table this parser could not read are missed.
+
+<sub>Requires: `paper.text`</sub>
+
+### `claim/unimplemented`
+
+**low** · model-assisted · `--repo`
+
+The paper describes a component the code does not have.
+
+A paper says it supports distributed training across nodes. The repository it links to has no reference to distribution anywhere: not a file, not a symbol, not a line of the README. Either the released code is a subset of what was built -- which is common and worth saying out loud -- or the claim outran the implementation.
+
+This is an **absence finding**, which is the hardest kind to make honestly, so the burden of proof is arranged to fall on the tool rather than on the author.
+
+The model does not decide anything. It extracts a claimed capability and the words that capability would be built out of, quoting the sentence. Then *code* searches the repository -- every path, every symbol, the README, the config keys -- and the finding exists only when **nothing** matches. Not "little", not "not much": nothing at all. One hit anywhere and the rule stays quiet.
+
+The finding names what was searched, through ``absent_from``, because an absence claim that does not say where it looked is not checkable. And the message says the released code may simply be partial, since that is usually the truth and the author knows it already.
+
+**Cannot detect.** Anything implemented under vocabulary the paper does not use, which is the normal case for research code: a capability called 'sharding' in the paper and 'partition' in the source leaves a trace this rule cannot see. It reads names -- paths, symbols, config keys, the README -- and not function bodies, so a capability implemented inline inside an unrelated function is invisible. It cannot tell a released subset from an overstated claim, and says so rather than guessing.
+
+<sub>Requires: `paper.text`, `repo.files`, `repo.symbols`, `repo.readme`, `repo.configs`</sub>
+
+### `claim/unsupported`
+
+**med** · model-assisted
+
+An abstract promising something the paper never returns to.
+
+An abstract is written before the experiments settle and edited after, and a sentence survives from a version of the paper that no longer exists. The result it promises is not in the results, not in the appendix, not anywhere. A reviewer finds this immediately and it reads as carelessness.
+
+The same absence discipline as ``claim/unimplemented``, and the same reason for it: an absence finding is the easiest kind to get wrong, so nothing here rests on a model's opinion about whether a claim was supported.
+
+The model extracts a claim from the abstract and the words its evidence would be written in. **Code** then searches the entire body of the paper -- every section after the abstract -- and the finding exists only when not one of those words occurs anywhere in it. One occurrence and the rule stays quiet, because at that point the paper does discuss the subject and whether it does so *convincingly* is a judgement this tool has no business making.
+
+That threshold is deliberately far past the point of caution. It catches the sentence that was left behind entirely, not the claim a reviewer would call thin -- and the first of those is a real error while the second is an opinion.
+
+**Cannot detect.** Claims the paper does discuss but does not actually establish. This rule reports a subject the body never raises at all; whether the evidence offered for a subject is convincing is a judgement it does not attempt. It searches words, so evidence presented under different vocabulary than the abstract uses, or only inside a figure or a table this parser could not read, looks like absence and is deliberately not reported: the rule stays quiet on a single match.
+
+<sub>Requires: `paper.text`, `paper.sections`</sub>
+
+## `eval/` — Evaluation integrity
+
+Model-assisted. Optional; skipped without a provider.
+
+### `eval/baseline-fairness`
+
+**med** · model-assisted
+
+Your method got four times the training budget.
+
+The single most common substantive objection in machine-learning peer review. A method trained for two hundred epochs is compared against a baseline trained for fifty, and the improvement that follows is partly the improvement you would get by training anything for four times as long. Usually nobody did this on purpose: the baseline was run early with defaults and never revisited.
+
+Same division of labour as ``claim/overreach``. Finding the two statements is reading comprehension across a methods section and an appendix, which a model is good at and pattern matching is not. Deciding whether 200 against 50 is lopsided is division, so **code does it** against a ratio written down here.
+
+The rule reports the disparity, never the conclusion. A paper may have every reason to train one system longer than another -- that is what a scaling study is -- so the finding says what the budgets were and leaves the reader to say whether it was fair. Both numbers are quoted from the author's own text, so that judgement takes about five seconds.
+
+**Cannot detect.** Budgets the paper does not state. A baseline quoted from another paper carries that paper's setup and usually no description of it, which is the most common way an unfair comparison stays invisible. It compares one dimension at a time, so it cannot see that a smaller model was trained longer to compensate, and it cannot tell a deliberate scaling study from an oversight -- it reports the disparity and leaves that judgement to the reader.
+
+<sub>Requires: `paper.text`</sub>

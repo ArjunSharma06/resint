@@ -12,6 +12,38 @@ that the API is not stable before `1.0`.
 
 ### Added
 
+- **A model-assisted rule tier, off by default.** Six rules that read a paper
+  against itself and against the papers it cites: `bib/citation-support`,
+  `claim/overreach`, `claim/scope-creep`, `claim/unimplemented`,
+  `claim/unsupported`, `eval/baseline-fairness`.
+
+  The user brings the model; resint holds no key and no account, and with none
+  configured every one of these is skipped and *reported as skipped*, never
+  silently passed. One stdlib transport reaches OpenAI, Gemini, Groq, DeepSeek,
+  OpenRouter, Together and a local Ollama, so `dependencies = []` stays
+  literally true.
+
+  **The model never renders a verdict code could compute.** It extracts a
+  correspondence and quotes it verbatim; code locates every quote in the real
+  source, does the arithmetic or the searching, and decides. A quote that
+  appears nowhere is discarded, so a hallucination cannot become a finding —
+  and neither can an instruction injected into a paper, because invented text
+  cannot supply the second anchor every finding requires.
+
+  Model findings do not set the exit code unless `--fail-on-model` is passed.
+  A misfire on a judgement call should not cost the deterministic rules their
+  credibility.
+- **Full text of cited papers**, from arXiv source and the PubMed Central open
+  access subset, narrowed to the relevant passages by deterministic retrieval
+  before any model sees them. Checking a citation against an abstract alone
+  answers the wrong question: the thing a paper is cited *for* is usually not
+  in its abstract.
+- **On-disk cache of model answers** (`~/.cache/resint/model-answers.sqlite`).
+  This is the determinism mechanism, not only a cost saving: `temperature=0`
+  does not exist on current models, so reproducibility comes from not asking
+  twice. The key hashes the rendered prompt, so editing a prompt invalidates
+  exactly the entries it produced.
+
 - **arXiv source bundles as input.** `resint check bundle.tar.gz` unpacks a
   `.tar.gz` or `.zip` directly, which is how papers actually arrive from
   arXiv. Anything unreadable — a PDF, a binary — fails with a sentence
@@ -38,7 +70,8 @@ that the API is not stable before `1.0`.
   draft parsed as a grid of `\hline` rows. Comments are now blanked with
   spaces, preserving length so offsets stay valid.
 - **`\multicolumn{2}{c}{BLEU}` became the header `cBLEU`**, and
-  `ule{0pt}{2.0ex}` became the cell text `0pt2.0ex`.
+  `
+ule{0pt}{2.0ex}` became the cell text `0pt2.0ex`.
 
 Fixes from the first run against a real 48 KB paper with a 35-entry
 bibliography. None of these were caught by the corpus fixtures, which is the

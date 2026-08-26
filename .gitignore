@@ -22,3 +22,12 @@ sweeps/
 .env.*
 *.key
 secrets.*
+
+# Recorded model responses. These hold sentences copied verbatim out of the
+# papers they were run against, and arXiv's default terms do not permit
+# redistribution -- so a --record run must never become a commit. Fixtures
+# that ship with the repo are rewritten miniatures, and live in corpus/.
+fixtures/
+*.sqlite
+*.sqlite-wal
+*.sqlite-shm
