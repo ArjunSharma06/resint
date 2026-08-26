@@ -12,6 +12,7 @@ import pytest
 
 from resint.cli import main
 from resint.engine import run
+from resint.rules import load_all
 from resint.ir.finding import Finding, Severity, Tier
 from resint.parse.document import paper_from_path
 from resint.report.terminal import marks, render, render_finding, _Paint
@@ -99,8 +100,10 @@ def test_repo_rules_are_skipped_when_no_repository_is_given():
     """Skipping is reported, never silently counted as passing."""
     report = run(paper_from_path(POSITIVE, resolver=RESOLVER))
     assert report.skipped, "repro/ rules cannot run without --repo"
-    assert set(report.skipped.values()) == {"no repository supplied"}
-    assert all(r.startswith("repro/") for r in report.skipped)
+    no_repo = {r for r, why in report.skipped.items() if why == "no repository supplied"}
+    assert no_repo and no_repo == {r.id for r in load_all().all() if r.needs_repo}
+    # Nothing is skipped without a reason the reader can act on.
+    assert all(report.skipped.values())
 
 
 def test_suppressed_findings_are_hidden_from_the_terminal():

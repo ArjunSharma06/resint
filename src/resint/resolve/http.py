@@ -303,6 +303,41 @@ def _from_crossref(item: dict) -> Record | None:
     )
 
 
+def _open_access_ids(item: dict) -> tuple[str, str]:
+    """The arXiv id and PMCID OpenAlex knows for a work, if any.
+
+    These are what make full-text retrieval possible, and OpenAlex is the only
+    index queried here that reports them. It records the arXiv id as a landing
+    page among the work's locations rather than as a bare identifier, so the
+    URL is where to look.
+    """
+    from .fulltext import _ARXIV_NEW, _ARXIV_OLD, _PMCID
+
+    identifiers = item.get("ids") or {}
+    pmcid = ""
+    found = _PMCID.search(identifiers.get("pmcid") or "")
+    if found:
+        pmcid = found.group(1).upper()
+
+    locations = list(item.get("locations") or [])
+    best = item.get("best_oa_location")
+    if best:
+        locations.append(best)
+
+    for location in locations:
+        if not isinstance(location, dict):
+            continue
+        url = location.get("landing_page_url") or ""
+        if "arxiv.org" not in url.lower():
+            continue
+        for pattern in (_ARXIV_NEW, _ARXIV_OLD):
+            hit = pattern.search(url)
+            if hit:
+                return hit.group(1), pmcid
+
+    return "", pmcid
+
+
 def _from_openalex(item: dict) -> Record | None:
     authors = tuple(
         a["author"]["display_name"]
@@ -310,6 +345,7 @@ def _from_openalex(item: dict) -> Record | None:
         if a.get("author", {}).get("display_name")
     )
     venue = (item.get("primary_location") or {}).get("source") or {}
+    arxiv_id, pmcid = _open_access_ids(item)
     return Record(
         source="openalex",
         title=" ".join((item.get("display_name") or "").split()),
@@ -317,4 +353,6 @@ def _from_openalex(item: dict) -> Record | None:
         authors=authors,
         venue=venue.get("display_name", ""),
         doi=normalize_doi(item.get("doi") or ""),
+        arxiv_id=arxiv_id,
+        pmcid=pmcid,
     )

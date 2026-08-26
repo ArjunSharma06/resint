@@ -60,7 +60,13 @@ def test_repo_slices_come_from_runnable_rules_not_every_rule():
 def test_no_repo_means_no_repo_slices_at_all():
     chosen = plan(REG, has_repo=False)
     assert chosen.repo_slices == set()
-    assert all(r.startswith("repro/") for r in chosen.skipped)
+    # Every repo rule is skipped, and for the repository reason specifically --
+    # model rules are skipped too, for a different reason of their own.
+    assert {
+        rule_id
+        for rule_id, why in chosen.skipped.items()
+        if why == "no repository supplied"
+    } == {r.id for r in REG.all() if r.needs_repo}
 
 
 def test_model_rules_are_skipped_without_a_provider():

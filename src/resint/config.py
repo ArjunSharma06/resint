@@ -58,6 +58,9 @@ class Config:
     suppressions: list[Suppression] = field(default_factory=list)
     disabled: set[str] = field(default_factory=set)
     path: Path | None = None
+    # provider/name/base_url for the model tier. Never a key: this file is
+    # committed alongside the paper, and a key in it is a key on GitHub.
+    model: dict[str, str] = field(default_factory=dict)
 
     def apply(self, findings, today: date | None = None) -> tuple[list, list[str]]:
         """Return (findings with suppressions marked, notes about the config)."""
@@ -127,7 +130,7 @@ def parse(text: str, path: Path | None = None) -> Config:
         top = _KEY.match(line)
         if top and not top.group("indent") and not top.group("dash"):
             key, value = top.group("key"), _unquote(top.group("value"))
-            if key in ("suppress", "rules"):
+            if key in ("suppress", "rules", "model"):
                 section = key
                 current = None
                 continue
@@ -146,6 +149,12 @@ def parse(text: str, path: Path | None = None) -> Config:
             nested = _KEY.match(line)
             if nested and current is not None:
                 current[nested.group("key")] = _unquote(nested.group("value"))
+            continue
+
+        if section == "model":
+            nested = _KEY.match(line)
+            if nested:
+                config.model[nested.group("key")] = _unquote(nested.group("value"))
             continue
 
         if section == "rules":

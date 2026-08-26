@@ -51,9 +51,21 @@ class Record:
     # than reporting nothing.
     matched_by: str = "doi"
 
+    #: Identifiers that lead to *readable* full text, when the index knows
+    #: them. Only these two, because arXiv source and PubMed Central XML are
+    #: the only open-access forms that are structured text rather than a PDF,
+    #: and resint has no PDF reader. See ``resolve/fulltext.py``.
+    arxiv_id: str = ""
+    pmcid: str = ""
+
     @property
     def authoritative(self) -> bool:
         return self.matched_by == "doi"
+
+    @property
+    def has_full_text(self) -> bool:
+        """Whether an open-access full text exists that we can parse."""
+        return bool(self.arxiv_id or self.pmcid)
 
     def render(self) -> str:
         who = self.authors[0].split(",")[0] if self.authors else "?"

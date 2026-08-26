@@ -128,13 +128,14 @@ def run(
     min_severity: Severity | None = None,
     config: Config | None = None,
     prepared: Plan | None = None,
+    model=None,
 ) -> Report:
     settings = config or Config()
     chosen = prepared or plan(
         registry,
         settings,
         has_repo=repo is not None,
-        has_provider=has_provider,
+        has_provider=has_provider or model is not None,
     )
     runnable, skipped = chosen.runnable, dict(chosen.skipped)
 
@@ -144,7 +145,7 @@ def run(
     if repo is not None:
         report.unchecked.extend(getattr(repo, "unchecked", []))
 
-    ctx = Context(paper=paper, repo=repo)
+    ctx = Context(paper=paper, repo=repo, model=model)
     for rule in runnable:
         report.findings.extend(rule.run(ctx))
     report.unchecked.extend(ctx.abstentions)

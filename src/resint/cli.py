@@ -18,8 +18,9 @@ from pathlib import Path
 from . import __version__
 from .config import Config, ConfigError, discover, parse as parse_config
 from .engine import plan, run
-from .ir.finding import Severity
+from .ir.finding import Severity, Tier
 from .parse.acquire import UnreadableInput
+from .model.openai_compat import from_config
 from .parse.document import paper_from_path
 from .parse.repo import read_repo
 from .report.sarif import render as render_sarif
@@ -63,11 +64,17 @@ def _cmd_check(args: argparse.Namespace) -> int:
     # bib rules switched off still parses the bibliography and still opens
     # sockets. One plan drives both the loading and the running, so the two
     # cannot disagree.
+    # The user brings their own model. resint holds no key: the provider is
+    # named in .resint.yml and the key comes from the environment, because
+    # that file is committed alongside the paper. With none configured every
+    # model rule is skipped and reported as skipped, never silently passed.
+    provider = None if args.no_model else from_config(config.model)
+
     chosen = plan(
         registry,
         config,
         has_repo=bool(args.repo),
-        has_provider=False,
+        has_provider=provider is not None,
     )
 
     # Only bibliographic metadata leaves the machine -- titles and DOIs of
@@ -125,6 +132,7 @@ def _cmd_check(args: argparse.Namespace) -> int:
         min_severity=Severity(args.min_severity) if args.min_severity else None,
         config=config,
         prepared=chosen,
+        model=provider,
     )
     elapsed = time.perf_counter() - started
 
@@ -150,9 +158,21 @@ def _cmd_check(args: argparse.Namespace) -> int:
 
     if args.fail_on == "none":
         return EXIT_OK
-    counts = report.counts()
+
+    # Model-assisted findings are reported but do not fail a build unless
+    # asked for. A model rule misfiring in someone's pipeline damages trust in
+    # the thirteen rules that are rock solid, and those are the asset. The
+    # finding is still shown, still in the JSON, still counted -- it just does
+    # not turn the build red on a judgement call.
+    counting = report.findings
+    if not args.fail_on_model:
+        counting = [f for f in counting if f.tier is not Tier.MODEL_ASSISTED]
+
     floor = {"high": ("high",), "med": ("high", "med"), "low": ("high", "med", "low")}
-    triggered = any(counts[level] for level in floor[args.fail_on])
+    wanted = floor[args.fail_on]
+    triggered = any(
+        f.severity.value in wanted for f in counting if not f.suppressed
+    )
     return EXIT_FINDINGS if triggered else EXIT_OK
 
 
@@ -222,6 +242,24 @@ suppress:
 # Turn a rule off entirely when it does not apply to this work.
 rules:
   # stats/grim: off        # no integer-scale response data here
+
+# The model-assisted rules, which are off until you name a model here. They
+# read the papers you cite and compare your claims against your own tables.
+#
+# You bring the model and you pay for it; resint has no key of its own and
+# sends nothing anywhere without one. Ollama runs locally and costs nothing,
+# which is the easiest way to try this.
+#
+# NEVER put an API key in this file -- it is committed alongside the paper.
+# The key is read from the environment: OPENAI_API_KEY, GEMINI_API_KEY,
+# GROQ_API_KEY, TOGETHER_API_KEY. Ollama needs none.
+#
+# These findings are reported but do not fail a build unless you pass
+# --fail-on-model, because they involve judgement and the deterministic rules
+# should not lose your trust when one of them misfires.
+model:
+  # provider: ollama       # or openai, gemini, groq, together
+  # name: llama3           # the model to use
 """
 
 
@@ -258,6 +296,19 @@ def main(argv: list[str] | None = None) -> int:
     )
     check.add_argument(
         "--mailto", default=None, help="contact address for the Crossref polite pool"
+    )
+    check.add_argument(
+        "--no-model",
+        action="store_true",
+        help="skip the model-assisted rules even if one is configured",
+    )
+    check.add_argument(
+        "--fail-on-model",
+        action="store_true",
+        help=(
+            "let model-assisted findings set the exit code "
+            "(off by default: they are reported but never fail a build)"
+        ),
     )
     check.add_argument("--config", default=None, help="path to a .resint.yml")
     check.add_argument(

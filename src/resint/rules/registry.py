@@ -88,6 +88,10 @@ class Context:
     repo: object = None
     rule: "Rule | None" = None
     abstentions: list[str] = field(default_factory=list)
+    # Handed only to rules declared model-assisted. A deterministic rule that
+    # reached for a model would be mislabelling its own output, so it is not
+    # given the option: ctx.model is None and ctx.ask() refuses.
+    model: object = None
 
     def abstain(self, reason: str) -> None:
         """Record that this rule declined to check something, and why.
@@ -101,6 +105,27 @@ class Context:
         if self.rule is None:
             raise RuleDefinitionError("ctx.abstain() is only available inside a rule")
         self.abstentions.append(f"{self.rule.id}: {reason}")
+
+    def ask(self, request):
+        """Put a question to the user's model, if this run has one.
+
+        Never raises and never returns something a rule can mistake for an
+        answer. Every failure -- no provider, no key, a timeout, a refusal, a
+        reply that is not the right shape -- comes back UNAVAILABLE, which
+        cannot become a finding. The rule's job is to notice that and abstain.
+        """
+        from ..model.base import Completion, Outcome
+
+        if self.rule is None:
+            raise RuleDefinitionError("ctx.ask() is only available inside a rule")
+        if self.rule.tier is not Tier.MODEL_ASSISTED:
+            raise RuleDefinitionError(
+                f"{self.rule.id} is declared {self.rule.tier.value} but called "
+                "ctx.ask(). A rule that consults a model is model-assisted."
+            )
+        if self.model is None:
+            return Completion(Outcome.UNAVAILABLE, detail="no model provider configured")
+        return self.model.complete(request)
 
     def finding(
         self,
@@ -160,6 +185,7 @@ class Context:
             ),
             rule=rule,
             abstentions=self.abstentions,
+            model=self.model if rule.tier is Tier.MODEL_ASSISTED else None,
         )
 
 

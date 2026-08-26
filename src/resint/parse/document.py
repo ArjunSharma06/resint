@@ -23,6 +23,7 @@ from .acquire import UnreadableInput, acquire
 from .bbl import looks_like_bbl, parse as parse_bbl
 from .bibtex import parse as parse_bibtex
 from .citations import extract_citations
+from .claims import extract_claims
 from .extract import (
     extract_hyperparameters,
     extract_labeled_numbers,
@@ -35,6 +36,9 @@ from .tables import extract_tables
 
 ALL_SLICES = {
     "paper.text",
+    # Always populated, because normalization produces it either way. Declared
+    # like anything else so a rule reading section structure says so.
+    "paper.sections",
     "paper.stats",
     "paper.means",
     "paper.tables",
@@ -43,7 +47,14 @@ ALL_SLICES = {
     "paper.citations",
     "paper.bib",
     "paper.resolutions",
+    "paper.claims",
+    "paper.cited_texts",
 }
+
+#: How many cited papers one run will download. A survey cites three hundred
+#: works; fetching every one of them to check a dozen claims is not a trade
+#: anybody would make knowingly.
+MAX_CITED_FETCHES = 60
 
 
 def find_bibliography(tex_path: Path) -> Path | None:
@@ -79,6 +90,42 @@ def resolve_bibliography(source, path, bib=None) -> tuple[str | None, str]:
     return None, source.bib_name
 
 
+def _fetch_cited(paper: Paper, source, progress=None) -> dict:
+    """Download the cited papers that some claim actually rests on.
+
+    Only those. A bibliography is mostly background reading, and a reference
+    nobody attached an assertion to has nothing to check, so fetching it would
+    be paid for and then discarded. In practice this turns a hundred-entry
+    bibliography into a dozen or so downloads.
+    """
+    from ..resolve.fulltext import NullFullText
+
+    active = source or NullFullText()
+    by_key = {entry.key: entry for entry in paper.bib}
+
+    wanted: list[str] = []
+    for claim in paper.claims:
+        for key in claim.keys:
+            if key in by_key and key not in wanted:
+                wanted.append(key)
+
+    if len(wanted) > MAX_CITED_FETCHES:
+        paper.unchecked.append(
+            f"{len(wanted) - MAX_CITED_FETCHES} cited papers not fetched: "
+            f"the per-run limit of {MAX_CITED_FETCHES} was reached"
+        )
+        wanted = wanted[:MAX_CITED_FETCHES]
+
+    fetched: dict = {}
+    for number, key in enumerate(wanted, 1):
+        if progress is not None:
+            progress(f"fetching cited paper {number}/{len(wanted)}")
+        resolution = paper.resolutions.get(key)
+        record = resolution.record if resolution is not None else None
+        fetched[key] = active.fetch(by_key[key], record)
+    return fetched
+
+
 def paper_from_latex(
     text: str,
     source_id: str = "paper.tex",
@@ -92,6 +139,7 @@ def paper_from_latex(
     policy: ResolvePolicy | None = None,
     regions: tuple = (),
     files: dict | None = None,
+    full_text=None,
 ) -> Paper:
     """Build a Paper, filling only the slices in ``needs``."""
     src = Source(source_id, "latex", path=path or source_id)
@@ -139,10 +187,15 @@ def paper_from_latex(
         paper.means = result.means
         paper.unchecked.extend(result.unchecked)
 
-    if "paper.citations" in wanted:
+    # Claims are built out of citations, so the citation pass has to run even
+    # when only the claims were asked for.
+    if {"paper.citations", "paper.claims"} & wanted:
         paper.citations = extract_citations(text, src)
 
-    needs_bib = {"paper.bib", "paper.resolutions"} & wanted
+    if "paper.claims" in wanted:
+        paper.claims = extract_claims(doc, src, paper.citations, doc.sections)
+
+    needs_bib = {"paper.bib", "paper.resolutions", "paper.cited_texts"} & wanted
     if needs_bib:
         # A submission that inlines its compiled bibliography carries no
         # separate file at all -- the thebibliography environment sits in the
@@ -187,6 +240,9 @@ def paper_from_latex(
                 "(offline or no resolver configured); not reported as missing"
             )
 
+    if "paper.cited_texts" in wanted and paper.bib:
+        paper.cited_texts = _fetch_cited(paper, full_text, progress)
+
     return paper
 
 
@@ -197,6 +253,7 @@ def paper_from_path(
     resolver: Resolver | None = None,
     progress=None,
     policy: ResolvePolicy | None = None,
+    full_text=None,
 ) -> Paper:
     """Build a Paper from a file, an arXiv source bundle, or a zip.
 
@@ -221,6 +278,7 @@ def paper_from_path(
         policy=policy,
         regions=source.regions,
         files=source.files,
+        full_text=full_text,
     )
     paper.unchecked[:0] = list(source.notes)
     return paper

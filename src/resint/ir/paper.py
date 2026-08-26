@@ -135,6 +135,26 @@ class Citation:
     section: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class CitedClaim:
+    """A sentence that cites something, together with what it cites.
+
+    This is the unit ``bib/citation-support`` checks: the assertion an author
+    attached a reference to. One sentence citing three works is one claim with
+    three keys, because the sentence is what all three are being offered in
+    support of.
+    """
+
+    text: str
+    keys: tuple[str, ...]
+    span: Span
+    section: str = ""
+
+    def render(self) -> str:
+        short = self.text if len(self.text) <= 70 else self.text[:67] + "..."
+        return f"{short} [{', '.join(self.keys)}]"
+
+
 # Entry types that legitimately sit outside the major indices. A reference
 # that fails to resolve is much weaker evidence of fabrication when it is a
 # thesis or a technical report than when it claims to be a journal article.
@@ -249,5 +269,9 @@ class Paper:
     # key -> Resolution. Declaring paper.resolutions is what causes any
     # network access at all; no rule asking for it means no lookups.
     resolutions: dict = field(default_factory=dict)
-    claims: list = field(default_factory=list)
+    claims: list[CitedClaim] = field(default_factory=list)
+    # key -> resolve.fulltext.Fetched. Declaring paper.cited_texts is what
+    # causes cited papers to be downloaded at all, the same way declaring
+    # paper.resolutions is what causes index lookups.
+    cited_texts: dict = field(default_factory=dict)
     unchecked: list[str] = field(default_factory=list)
