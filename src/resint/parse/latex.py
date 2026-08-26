@@ -36,6 +36,10 @@ _DROP_ARG = {
     "hspace", "vspace", "setlength", "color", "textcolor", "footnote",
     "cite", "citep", "citet", "citeauthor", "citeyear", "citealp",
     "autoref", "cref", "Cref", "url", "href",
+    # Some submissions wrap a finished PDF instead of typesetting from source.
+    # The filename and page options are not prose, and they land at the very
+    # top of the document where a prompt can least afford them.
+    "includepdf",
 }
 
 # Definition commands. The whole definition is skipped -- name, optional

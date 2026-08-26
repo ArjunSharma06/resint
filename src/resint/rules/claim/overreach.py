@@ -166,7 +166,7 @@ def check(ctx: Context) -> Iterator:
             system=SYSTEM,
             user=(
                 "PAPER:\n"
-                + ctx.paper.text.content[:12_000]
+                + ctx.paper.text.window(12_000)
                 + "\n\nTABLES:\n"
                 + _render(tables)
             ),

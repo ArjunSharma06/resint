@@ -108,12 +108,28 @@ class TextSlice:
     _offsets: tuple[int, ...]
     _source: Source
     _line_starts: tuple[int, ...]
+    #: Where the preamble ends. Normalization strips command names but keeps
+    #: their arguments, so a document's front matter survives as a run of
+    #: noise -- "theoremTheorem[section] lemma[theorem]Lemma", editorial-note
+    #: macros, author blocks. Harmless to a rule searching for numbers, and
+    #: actively damaging in a prompt, where it takes the position a model
+    #: attends to most and displaces real content under truncation.
+    body_start: int = 0
 
     def __len__(self) -> int:
         return len(self.content)
 
     def __bool__(self) -> bool:
         return bool(self.content)
+
+    def window(self, limit: int) -> str:
+        """The stretch of prose worth showing a model.
+
+        Starts after the preamble and runs to ``limit`` characters. Offsets
+        are not shifted: a quote taken from this window is still located
+        against the full content, so anchoring is unaffected.
+        """
+        return self.content[self.body_start : self.body_start + limit]
 
     def span(self, start: int, end: int, label: str = "") -> Span | None:
         """Anchor a range of this text back into the original source."""

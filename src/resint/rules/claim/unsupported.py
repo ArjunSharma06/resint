@@ -158,7 +158,7 @@ def check(ctx: Context) -> Iterator:
     answer = ctx.ask(
         Request(
             system=SYSTEM,
-            user="PAPER:\n" + ctx.paper.text.content[:14_000],
+            user="PAPER:\n" + ctx.paper.text.window(14_000),
             schema={"required": ["claims"]},
             prompt_version=PROMPT_VERSION,
         )

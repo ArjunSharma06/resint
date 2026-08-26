@@ -14,3 +14,11 @@ htmlcov/
 .DS_Store
 sweeps/
 .cache/
+
+# Secrets never belong in the repo. resint reads API keys from the
+# environment only -- see model/openai_compat.py -- so nothing here should
+# ever hold one. These lines are a safety net, not the mechanism.
+.env
+.env.*
+*.key
+secrets.*

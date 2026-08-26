@@ -50,7 +50,11 @@ class Request:
     schema: dict
     tier: str = "cheap"
     prompt_version: str = "1"
-    max_tokens: int = 2048
+    # Generous because reasoning models spend tokens thinking before they
+    # write, and those are not counted in completion_tokens: a reply of five
+    # visible tokens cost a hundred and thirty. A cap that is too low returns
+    # a message object with no content at all rather than a short answer.
+    max_tokens: int = 4096
 
     def cache_key(self, model: str) -> str:
         """Identity for the verdict cache.
@@ -170,7 +174,7 @@ class CachingProvider:
             with self._lock:
                 self._memory[key] = result.payload
             if self.store is not None:
-                self.store.put(key, result.payload)
+                self.store.put(key, result.payload, model)
 
         return result
 

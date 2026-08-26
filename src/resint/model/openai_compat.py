@@ -21,6 +21,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -36,12 +38,54 @@ PROVIDERS = {
         "GEMINI_API_KEY",
     ),
     "together": ("https://api.together.xyz/v1", "TOGETHER_API_KEY"),
+    "deepseek": ("https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
+    "openrouter": ("https://openrouter.ai/api/v1", "OPENROUTER_API_KEY"),
     # Local, free, and needs no key at all. The reason a contributor with no
     # budget can still work on the model tier.
     "ollama": ("http://localhost:11434/v1", ""),
 }
 
 USER_AGENT = "resint (https://github.com/ArjunSharma06/resint)"
+
+#: Longest a single rate-limit wait may be. A provider asking for five minutes
+#: is telling you to come back later, not to hold the terminal open.
+MAX_BACKOFF_SECONDS = 30.0
+
+
+#: Google states the wait in the error body rather than in a header:
+#: "Please retry in 5.056492331s." Reading it beats guessing.
+_RETRY_IN_BODY = re.compile(r"retry in ([0-9.]+)\s*s", re.IGNORECASE)
+
+
+def _retry_after(exc, attempt: int, body: str = "") -> float:
+    """How long to wait after a 429.
+
+    The provider knows when its window resets and we do not, so anything it
+    tells us wins. It may say so in a Retry-After header, or -- as Gemini does
+    -- in prose inside the error body. Only when neither is present do we
+    guess, doubling from two seconds.
+    """
+    try:
+        header = (exc.headers or {}).get("Retry-After", "") or ""
+    except AttributeError:
+        header = ""
+
+    if header:
+        try:
+            return min(float(header), MAX_BACKOFF_SECONDS)
+        except ValueError:
+            pass  # Retry-After may be an HTTP date; fall through.
+
+    stated = _RETRY_IN_BODY.search(body or "")
+    if stated:
+        try:
+            # A shade over what was asked for. Coming back at the exact
+            # instant the window opens is how you get refused again.
+            return min(float(stated.group(1)) + 0.5, MAX_BACKOFF_SECONDS)
+        except ValueError:
+            pass
+
+    return min(2.0 ** (attempt + 1), MAX_BACKOFF_SECONDS)
 
 
 @dataclass
@@ -53,7 +97,24 @@ class OpenAICompatProvider:
     base_url: str = ""
     api_key: str | None = None
     timeout: float = 60.0
+    #: How many times to wait out a rate limit before giving up. Six model
+    #: rules fire five or six calls per paper in quick succession, which is
+    #: over the free-tier limit of every hosted provider -- the first real run
+    #: against Gemini had 8 of 8 calls refused. Rather than pace every user to
+    #: the slowest tier, back off only when actually told to: a paid key never
+    #: waits, and a free one still finishes.
+    max_retries: int = 3
+    #: Injectable so a test can exercise backoff without sleeping through it.
+    sleep: object = None
+    clock: object = None
+    #: Seconds to leave between calls. Starts at zero -- a paid key or a local
+    #: model should never be slowed -- and rises the first time a provider says
+    #: it is being asked too fast. Retries count against the same quota they
+    #: are waiting for, so reacting alone turns one refusal into four; the
+    #: calls after it have to slow down too.
+    min_interval: float = 0.0
     _endpoint: str = field(default="", repr=False)
+    _last_call: float = field(default=0.0, repr=False)
 
     def __post_init__(self) -> None:
         default_url, env_var = PROVIDERS.get(self.provider, ("", ""))
@@ -74,6 +135,27 @@ class OpenAICompatProvider:
             return False
         _, env_var = PROVIDERS.get(self.provider, ("", ""))
         return bool(self.api_key) or not env_var
+
+    def models(self) -> list[str]:
+        """What this provider actually serves, from its own /models endpoint.
+
+        Model names change and retire without notice, and a wrong one fails as
+        a 404 that looks like a broken endpoint. Every OpenAI-compatible API
+        exposes this list; reading it costs nothing and settles the question.
+        """
+        if not self.configured:
+            return []
+        headers = {"User-Agent": USER_AGENT}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        req = urllib.request.Request(f"{self._endpoint}/models", headers=headers)
+        try:
+            with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError):
+            return []
+        found = [m.get("id", "") for m in payload.get("data") or []]
+        return sorted(name for name in found if name)
 
     def complete(self, request: Request) -> Completion:
         if not self.configured:
@@ -109,30 +191,62 @@ class OpenAICompatProvider:
         req = urllib.request.Request(
             f"{self._endpoint}/chat/completions", data=body, headers=headers
         )
+        pause = self.sleep or time.sleep
+        now = self.clock or time.monotonic
 
-        try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as exc:
-            detail = f"HTTP {exc.code}"
-            if exc.code == 429:
-                detail = "rate limited"
-            elif exc.code in (401, 403):
-                detail = "key rejected"
-            return Completion(Outcome.UNAVAILABLE, model=self.model, detail=detail)
-        except (urllib.error.URLError, TimeoutError, OSError) as exc:
-            hint = ""
-            if self.provider == "ollama":
-                hint = " (is ollama running?)"
-            return Completion(
-                Outcome.UNAVAILABLE, model=self.model, detail=f"{exc}{hint}"
-            )
-        except ValueError as exc:
-            return Completion(
-                Outcome.UNAVAILABLE, model=self.model, detail=f"reply was not JSON: {exc}"
-            )
+        for attempt in range(self.max_retries + 1):
+            # Space this call from the last one, if a refusal has taught us to.
+            if self.min_interval > 0 and self._last_call:
+                overdue = self.min_interval - (now() - self._last_call)
+                # Not "> 0": subtracting two floats that should cancel leaves
+                # a residue around 1e-16, and pausing for that is a wasted
+                # syscall that also shows up in tests as a phantom sleep.
+                if overdue > 0.01:
+                    pause(overdue)
+            self._last_call = now()
 
-        return self._read(payload, request)
+            try:
+                with urllib.request.urlopen(req, timeout=self.timeout) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+            except urllib.error.HTTPError as exc:
+                if exc.code == 429:
+                    try:
+                        body = exc.read().decode("utf-8", "replace")
+                    except Exception:  # noqa: BLE001 -- diagnostics only
+                        body = ""
+                    wait = _retry_after(exc, attempt, body)
+                    # Learn the pace rather than only reacting to it.
+                    self.min_interval = max(self.min_interval, min(wait, 10.0))
+                    if attempt < self.max_retries:
+                        pause(wait)
+                        continue
+
+                detail = f"HTTP {exc.code}"
+                if exc.code == 429:
+                    detail = (
+                        f"rate limited, and still limited after "
+                        f"{self.max_retries} retries"
+                    )
+                elif exc.code in (401, 403):
+                    detail = "key rejected"
+                return Completion(Outcome.UNAVAILABLE, model=self.model, detail=detail)
+            except (urllib.error.URLError, TimeoutError, OSError) as exc:
+                hint = " (is ollama running?)" if self.provider == "ollama" else ""
+                return Completion(
+                    Outcome.UNAVAILABLE, model=self.model, detail=f"{exc}{hint}"
+                )
+            except ValueError as exc:
+                return Completion(
+                    Outcome.UNAVAILABLE,
+                    model=self.model,
+                    detail=f"reply was not JSON: {exc}",
+                )
+
+            return self._read(payload, request)
+
+        return Completion(
+            Outcome.UNAVAILABLE, model=self.model, detail="rate limited"
+        )
 
     def _read(self, payload: dict, request: Request) -> Completion:
         choices = payload.get("choices") or []
@@ -152,6 +266,22 @@ class OpenAICompatProvider:
             )
 
         content = (choice.get("message") or {}).get("content")
+
+        if not content and reason == "length":
+            # A reasoning model spends tokens thinking before it writes
+            # anything, and those tokens are not in completion_tokens. Asked
+            # for JSON under a tight cap it returns a message object with no
+            # content field at all -- which read as "empty reply" and sent
+            # everyone looking at the wrong thing. Say what actually happened.
+            return Completion(
+                Outcome.UNAVAILABLE,
+                model=self.model,
+                detail=(
+                    f"reply was cut off by the {self.model} token limit "
+                    "before any content was produced; raise max_tokens"
+                ),
+            )
+
         if not content:
             return Completion(
                 Outcome.UNAVAILABLE, model=self.model, detail="reply was empty"

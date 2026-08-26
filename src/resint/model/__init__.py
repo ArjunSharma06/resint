@@ -22,6 +22,7 @@ from .base import (
     Request,
     StaticProvider,
 )
+from .store import DiskStore
 from .verify import Anchored, Located, Verdict, anchor_in, anchor_quotes, locate
 
 __all__ = [
@@ -30,6 +31,7 @@ __all__ = [
     "BudgetedProvider",
     "CachingProvider",
     "Completion",
+    "DiskStore",
     "Located",
     "NullProvider",
     "Outcome",

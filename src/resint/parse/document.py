@@ -126,6 +126,27 @@ def _fetch_cited(paper: Paper, source, progress=None) -> dict:
     return fetched
 
 
+def _body_start(raw: str, offsets) -> int:
+    """The normalized index where the document body begins.
+
+    Normalization strips command names but keeps their arguments, so a LaTeX
+    preamble survives into the text as a run of noise -- theorem-environment
+    declarations, editorial-note macros, author blocks. A rule scanning for
+    numbers is unbothered by it. A prompt is not: it lands in the position a
+    model attends to most, and under truncation it displaces real content.
+
+    Returns 0 when there is no preamble to skip, so text that was never a
+    full document is unaffected.
+    """
+    marker = raw.find(r"\begin{document}")
+    if marker < 0:
+        return 0
+    for index, offset in enumerate(offsets):
+        if offset >= marker:
+            return index
+    return 0
+
+
 def paper_from_latex(
     text: str,
     source_id: str = "paper.tex",
@@ -155,6 +176,7 @@ def paper_from_latex(
             _offsets=tuple(doc.offsets),
             _source=src,
             _line_starts=tuple(doc._line_starts),
+            body_start=_body_start(text, doc.offsets),
         )
 
     # paper.numbers is matched against column headings, so the tables have to

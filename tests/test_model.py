@@ -6,6 +6,7 @@ findings and one honest abstention** — never a finding. Those tests are the
 reason this tier is safe to ship, and they all run with sockets disabled.
 """
 
+import io
 import json
 
 import pytest
@@ -373,3 +374,215 @@ def test_a_well_formed_reply_is_answered():
     assert result.usable
     assert result.payload == {"claims": []}
     assert result.usage["total_tokens"] == 12
+
+
+def test_a_truncated_reasoning_reply_says_so():
+    """A reasoning model under a tight cap returns a message object with no
+    content field at all. That read as "reply was empty", which sends you
+    looking at the prompt instead of the token limit."""
+    provider = OpenAICompatProvider(model="m", provider="ollama")
+    result = provider._read(
+        {"choices": [{"finish_reason": "length", "message": {"role": "assistant"}}]},
+        request(),
+    )
+    assert result.outcome is Outcome.UNAVAILABLE
+    assert "cut off" in result.detail and "max_tokens" in result.detail
+
+
+def test_an_empty_reply_that_was_not_truncated_still_says_empty():
+    provider = OpenAICompatProvider(model="m", provider="ollama")
+    result = provider._read(
+        {"choices": [{"finish_reason": "stop", "message": {"content": ""}}]}, request()
+    )
+    assert "empty" in result.detail
+
+
+# --- rate limits ---------------------------------------------------------
+#
+# Six model rules fire five or six calls per paper in quick succession, which
+# is over the free-tier limit of every hosted provider. The first real run
+# against Gemini had 8 of 8 calls refused and every rule abstained, which
+# looks exactly like a broken tool.
+
+
+class _Limited:
+    """Refuses with 429 for the first `refusals` calls, then answers."""
+
+    def __init__(self, refusals, retry_after=None):
+        self.refusals = refusals
+        self.retry_after = retry_after
+        self.calls = 0
+
+    def __call__(self, req, timeout=None):
+        import urllib.error
+
+        self.calls += 1
+        if self.calls <= self.refusals:
+            headers = {"Retry-After": self.retry_after} if self.retry_after else {}
+            raise urllib.error.HTTPError("u", 429, "Too Many Requests", headers, None)
+
+        class _Response:
+            status = 200
+
+            def read(self):
+                return json.dumps(
+                    {"choices": [{"message": {"content": '{"ok": 1}'}}]}
+                ).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        return _Response()
+
+
+class _FakeTime:
+    """A clock that advances when you sleep on it.
+
+    A fake sleep paired with a real clock makes elapsed time stand still, so
+    pacing that has already been satisfied by a backoff wait looks unsatisfied
+    and sleeps again. The bug is in the test, not the code -- the same trap the
+    Pacer tests hit -- and the fix is to model time honestly.
+    """
+
+    def __init__(self):
+        self.now = 1000.0
+        self.slept = []
+
+    def sleep(self, seconds):
+        self.slept.append(round(seconds, 3))
+        self.now += seconds
+
+    def clock(self):
+        return self.now
+
+
+def test_a_rate_limit_is_waited_out(monkeypatch):
+    fake = _FakeTime()
+    limited = _Limited(refusals=2)
+    monkeypatch.setattr("urllib.request.urlopen", limited)
+
+    provider = OpenAICompatProvider(
+        model="m", provider="ollama", sleep=fake.sleep, clock=fake.clock
+    )
+    assert provider.complete(request()).usable
+    assert limited.calls == 3
+    assert fake.slept == [2.0, 4.0], "exponential backoff, not a fixed pause"
+
+
+def test_a_persistent_rate_limit_gives_up_and_says_so(monkeypatch):
+    monkeypatch.setattr("urllib.request.urlopen", _Limited(refusals=99))
+    provider = OpenAICompatProvider(
+        model="m", provider="ollama", max_retries=2, sleep=lambda s: None
+    )
+    result = provider.complete(request())
+    assert result.outcome is Outcome.UNAVAILABLE
+    assert "rate limited" in result.detail and "2 retries" in result.detail
+
+
+def test_the_providers_own_retry_after_wins(monkeypatch):
+    """It knows when its window resets; guessing is worse."""
+    fake = _FakeTime()
+    monkeypatch.setattr(
+        "urllib.request.urlopen", _Limited(refusals=1, retry_after="7")
+    )
+    provider = OpenAICompatProvider(
+        model="m", provider="ollama", sleep=fake.sleep, clock=fake.clock
+    )
+    provider.complete(request())
+    assert fake.slept == [7.0]
+
+
+def test_an_absurd_retry_after_is_capped(monkeypatch):
+    """A provider asking for an hour is saying come back later, not hold the
+    terminal open."""
+    fake = _FakeTime()
+    monkeypatch.setattr(
+        "urllib.request.urlopen", _Limited(refusals=1, retry_after="3600")
+    )
+    provider = OpenAICompatProvider(
+        model="m", provider="ollama", sleep=fake.sleep, clock=fake.clock
+    )
+    provider.complete(request())
+    assert fake.slept == [30.0]
+
+
+def test_a_rejected_key_is_not_retried(monkeypatch):
+    """Waiting changes nothing, and it would quadruple the time to the error."""
+    import urllib.error
+
+    calls = []
+
+    def refuse(req, timeout=None):
+        calls.append(1)
+        raise urllib.error.HTTPError("u", 401, "Unauthorized", {}, None)
+
+    monkeypatch.setattr("urllib.request.urlopen", refuse)
+    provider = OpenAICompatProvider(model="m", provider="ollama", sleep=lambda s: None)
+    assert "key rejected" in provider.complete(request()).detail
+    assert len(calls) == 1
+
+
+def test_a_stated_wait_in_the_error_body_is_honoured(monkeypatch):
+    """Gemini puts the wait in prose inside the body, not in a header:
+    "Please retry in 5.056492331s." Reading it beats guessing."""
+    import urllib.error
+
+    fake = _FakeTime()
+    calls = []
+
+    def limited(req, timeout=None):
+        calls.append(1)
+        if len(calls) == 1:
+            body = json.dumps(
+                {"error": {"message": "Quota exceeded. Please retry in 5.05s."}}
+            ).encode()
+            raise urllib.error.HTTPError(
+                "u", 429, "Too Many Requests", {}, io.BytesIO(body)
+            )
+
+        class _Response:
+            status = 200
+
+            def read(self):
+                return json.dumps(
+                    {"choices": [{"message": {"content": '{"ok": 1}'}}]}
+                ).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        return _Response()
+
+    monkeypatch.setattr("urllib.request.urlopen", limited)
+    provider = OpenAICompatProvider(
+        model="m", provider="ollama", sleep=fake.sleep, clock=fake.clock
+    )
+    assert provider.complete(request()).usable
+    # A shade over what was asked for: returning at the exact instant the
+    # window opens is how you get refused a second time.
+    assert fake.slept == [5.55]
+
+
+def test_a_refusal_teaches_the_provider_to_slow_down(monkeypatch):
+    """Retries count against the quota they are waiting for, so reacting alone
+    turns one refusal into four. The calls after it have to slow down too."""
+    import urllib.error
+
+    fake = _FakeTime()
+    provider = OpenAICompatProvider(
+        model="m", provider="ollama", sleep=fake.sleep, clock=fake.clock
+    )
+    assert provider.min_interval == 0.0, "a paid key must never be slowed"
+
+    def limited(req, timeout=None):
+        raise urllib.error.HTTPError("u", 429, "Too Many", {}, None)
+
+    monkeypatch.setattr("urllib.request.urlopen", limited)
+    provider.complete(request())
+    assert provider.min_interval > 0, "it should have learned the pace"

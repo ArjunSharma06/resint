@@ -125,3 +125,75 @@ def test_empty_input_is_handled():
     d = normalize("")
     assert d.text == "" and d.offsets == []
     assert d.raw_offset(0) == 0
+
+
+# --- what a model gets shown --------------------------------------------
+#
+# Normalization strips command names but keeps their arguments, so a LaTeX
+# preamble survives into the text as a run of noise. A rule scanning for
+# numbers never noticed. A prompt cannot afford it: it lands in the position a
+# model attends to most, and under truncation it displaces real content.
+#
+# Found by running tools/try_model.py --dry over real arXiv sources, where
+# every prompt opened with six hundred characters of theorem declarations.
+
+
+PREAMBLE = "\n".join(
+    [
+        r"\documentclass{article}",
+        r"\usepackage{amsmath}",
+        r"\newtheorem{theorem}{Theorem}[section]",
+        r"\newtheorem{lemma}[theorem]{Lemma}",
+        r"\newcommand{\dave}[1]{\textcolor{blue}{[Dave] #1}}",
+        r"\begin{document}",
+        "The first real sentence of the paper appears here.",
+        r"\end{document}",
+    ]
+)
+
+
+def test_the_body_starts_after_the_preamble():
+    from resint.parse.document import paper_from_latex
+
+    paper = paper_from_latex(PREAMBLE, needs={"paper.text"})
+    assert paper.text.window(200).strip().startswith("The first real sentence")
+
+
+def test_the_preamble_is_still_in_the_content():
+    """window() is a view for prompting, not a different document. Offsets
+    stay valid, so a quote taken from the window still anchors."""
+    from resint.parse.document import paper_from_latex
+
+    paper = paper_from_latex(PREAMBLE, needs={"paper.text"})
+    assert paper.text.body_start > 0
+    assert len(paper.text.content) > len(paper.text.window(10_000))
+
+
+def test_a_quote_from_the_window_still_anchors():
+    from resint.model.verify import anchor_in
+    from resint.parse.document import paper_from_latex
+
+    paper = paper_from_latex(PREAMBLE, needs={"paper.text"})
+    span, found = anchor_in(paper.text, "The first real sentence of the paper", "claim")
+    assert span is not None
+    assert found.start >= paper.text.body_start
+
+
+def test_text_with_no_preamble_is_unaffected():
+    from resint.parse.document import paper_from_latex
+
+    paper = paper_from_latex("Just prose, no document wrapper.", needs={"paper.text"})
+    assert paper.text.body_start == 0
+    assert paper.text.window(100) == paper.text.content[:100]
+
+
+def test_a_wrapped_pdf_does_not_become_prose():
+    """Some submissions typeset nothing and include a finished PDF. The
+    filename and page options are not content, and they sit at the very top."""
+    raw = (
+        r"\documentclass{article}" "\n" r"\begin{document}" "\n"
+        r"\includepdf[pages=-,fitpaper=true]{DDCM_paper_06-30-2026.pdf}" "\n"
+        "Real prose follows the wrapper.\n" r"\end{document}" "\n"
+    )
+    assert "DDCM_paper" not in normalize(raw).text
+    assert "fitpaper" not in normalize(raw).text
