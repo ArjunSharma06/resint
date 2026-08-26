@@ -10,6 +10,36 @@ that the API is not stable before `1.0`.
 
 ## [Unreleased]
 
+### Added
+
+- **arXiv source bundles as input.** `resint check bundle.tar.gz` unpacks a
+  `.tar.gz` or `.zip` directly, which is how papers actually arrive from
+  arXiv. Anything unreadable — a PDF, a binary — fails with a sentence
+  rather than a traceback.
+- **Multi-file documents.** A root that is mostly `\input` directives is the
+  normal shape of a real submission, and reading it alone sees the abstract
+  and nothing else. Includes are spliced in, tracked by a region map so a
+  finding in `results.tex` still reports that file and that file's line
+  number rather than an offset into a concatenation.
+- **Compiled bibliographies (`.bbl`), including inlined ones.** arXiv
+  submissions usually ship BibTeX's output rather than its input, and often
+  paste the `thebibliography` environment straight into the source. Without
+  this the three `bib/` rules sat out entirely on such papers; on the
+  Transformer paper it took reference resolution from 0 of 40 to 39 of 40.
+  Entries recovered this way are marked, and `bib/unresolved` reports them at
+  reduced severity — the title was reconstructed from rendered prose, so a
+  failed lookup is weaker evidence than one against a field read directly.
+
+### Fixed
+
+- **Table extraction parsed commented-out markup.** Tables are read from raw
+  source, since normalization destroys the `&` and `\` that carry the grid —
+  but comments were never stripped there, so a dead table from an earlier
+  draft parsed as a grid of `\hline` rows. Comments are now blanked with
+  spaces, preserving length so offsets stay valid.
+- **`\multicolumn{2}{c}{BLEU}` became the header `cBLEU`**, and
+  `ule{0pt}{2.0ex}` became the cell text `0pt2.0ex`.
+
 Fixes from the first run against a real 48 KB paper with a 35-entry
 bibliography. None of these were caught by the corpus fixtures, which is the
 argument for using the tool on real work early.

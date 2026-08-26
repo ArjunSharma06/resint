@@ -76,7 +76,7 @@ def sentences(text: str) -> list[tuple[int, int]]:
 
 def _span(doc: Normalized, src: Source, start: int, end: int, label: str) -> Span:
     lo, hi = doc.raw_range(start, end)
-    return Span(src, lo, hi, line=doc.line_of(lo), label=label or str(src))
+    return doc.anchor(src, lo, hi, label)
 
 
 def _enclosing_sentence(bounds: list[tuple[int, int]], index: int) -> tuple[int, int]:

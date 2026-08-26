@@ -17,9 +17,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Sequence
 
-from .span import Span
+from .span import Source, Span
 
 _SEVERITY_ORDER = {"low": 0, "med": 1, "high": 2}
+
+# Bumped when the serialized shape changes. A stored sweep records this so a
+# later reader can tell whether it understands the file it is looking at.
+SCHEMA_VERSION = 1
 
 
 class Severity(str, Enum):
@@ -170,6 +174,7 @@ class Finding:
 
     def to_dict(self) -> dict:
         return {
+            "schema": SCHEMA_VERSION,
             "rule": self.rule_id,
             "severity": self.severity.value,
             "tier": self.tier.value,
@@ -178,6 +183,10 @@ class Finding:
                 {
                     "source": a.source.id,
                     "kind": a.source.kind,
+                    # Carried so the round trip is lossless: Span.locate()
+                    # falls back to `path or id`, so dropping path changes
+                    # where a reloaded finding says it is.
+                    "path": a.source.path,
                     "start": a.start,
                     "end": a.end,
                     "line": a.line,
@@ -193,3 +202,57 @@ class Finding:
             "suppressed": self.suppressed,
             "suppressed_reason": self.suppressed_reason,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict, sources: dict | None = None) -> "Finding":
+        """Rebuild a finding from :meth:`to_dict`.
+
+        This is what makes a stored run comparable to a later one. Without it
+        a sweep is a pile of text nobody can diff, and "did that fix break
+        anything?" has no answer.
+
+        ``sources`` is an optional intern table. A sweep holds tens of
+        thousands of findings over a handful of files, and allocating a fresh
+        Source per anchor is pure waste.
+
+        Validation stays on: the two-anchor rule runs against loaded findings
+        exactly as it does against fresh ones, so a corrupted store is caught
+        on read rather than trusted.
+        """
+        schema = data.get("schema", 0)
+        if schema > SCHEMA_VERSION:
+            raise ValueError(
+                f"finding uses schema {schema}; this resint understands "
+                f"{SCHEMA_VERSION}. Upgrade, or re-run the sweep."
+            )
+
+        pool = sources if sources is not None else {}
+        anchors = []
+        for raw in data["anchors"]:
+            key = (raw["source"], raw.get("kind", "latex"), raw.get("path"))
+            source = pool.get(key)
+            if source is None:
+                source = Source(key[0], key[1], path=key[2])
+                pool[key] = source
+            anchors.append(
+                Span(
+                    source,
+                    raw["start"],
+                    raw["end"],
+                    line=raw.get("line"),
+                    label=raw.get("label"),
+                )
+            )
+
+        return cls(
+            rule_id=data["rule"],
+            severity=data["severity"],
+            tier=data["tier"],
+            message=data["message"],
+            anchors=anchors,
+            absent_from=data.get("absent_from"),
+            fix=data.get("fix"),
+            affects=tuple(data.get("affects", ())),
+            confidence=data.get("confidence"),
+            suppressed_reason=data.get("suppressed_reason"),
+        )

@@ -1,3 +1,4 @@
+from .http import Pacer, ResolvePolicy
 from .base import (
     CachingResolver,
     NullResolver,
@@ -9,6 +10,8 @@ from .base import (
 )
 
 __all__ = [
+    "Pacer",
+    "ResolvePolicy",
     "CachingResolver",
     "NullResolver",
     "Record",

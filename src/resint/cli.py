@@ -17,8 +17,9 @@ from pathlib import Path
 
 from . import __version__
 from .config import Config, ConfigError, discover, parse as parse_config
-from .engine import run
+from .engine import plan, run
 from .ir.finding import Severity
+from .parse.acquire import UnreadableInput
 from .parse.document import paper_from_path
 from .parse.repo import read_repo
 from .report.sarif import render as render_sarif
@@ -57,13 +58,25 @@ def _cmd_check(args: argparse.Namespace) -> int:
 
     registry = load_all()
 
+    # Decide what will run before loading anything. Without this the loader
+    # has no idea what is wanted and builds every slice -- so a run with the
+    # bib rules switched off still parses the bibliography and still opens
+    # sockets. One plan drives both the loading and the running, so the two
+    # cannot disagree.
+    chosen = plan(
+        registry,
+        config,
+        has_repo=bool(args.repo),
+        has_provider=False,
+    )
+
     # Only bibliographic metadata leaves the machine -- titles and DOIs of
     # works the paper already cites publicly. The manuscript itself is never
     # transmitted. --offline skips it entirely, at the cost of the reference
     # rules abstaining rather than reporting.
     resolver = (
         NullResolver()
-        if args.offline
+        if args.offline or not chosen.opens_network
         else CachingResolver(HttpResolver(mailto=args.mailto))
     )
 
@@ -72,7 +85,10 @@ def _cmd_check(args: argparse.Namespace) -> int:
     # and --format sarif stay pipeable.
     def progress(done: int, total: int) -> None:
         if args.format == "term" and sys.stderr.isatty():
-            tail = "" if done < total else "\r" + " " * 44 + "\r"
+            # Overwriting with spaces leaves a line of whitespace behind once
+            # the report's own leading newline moves past it. ANSI erase-line
+            # actually clears it, and we are already inside an isatty guard.
+            tail = "" if done < total else "\r\033[2K"
             print(
                 f"\r  resolving references\u2026 {done}/{total}",
                 end=tail,
@@ -81,30 +97,34 @@ def _cmd_check(args: argparse.Namespace) -> int:
             )
 
     started = time.perf_counter()
-    paper = paper_from_path(
-        target, bib=args.bib, resolver=resolver, progress=progress
-    )
+    try:
+        paper = paper_from_path(
+            target,
+            needs=chosen.paper_slices,
+            bib=args.bib,
+            resolver=resolver,
+            progress=progress,
+        )
+    except UnreadableInput as exc:
+        # A sentence, never a traceback. The user pointed at the wrong thing;
+        # that is a usage error, not a crash.
+        print(f"resint: {exc}", file=sys.stderr)
+        return EXIT_USAGE
 
     # Only build the repository IR when a repository was actually given.
     # Walking a tree nobody asked about is the kind of cost that makes a
     # linter feel slow for no benefit.
     repo = None
     if args.repo:
-        needed = {
-            req
-            for r in registry.all()
-            for req in r.requires
-            if req.startswith("repo.")
-        }
-        repo = read_repo(args.repo, needs=needed)
+        repo = read_repo(args.repo, needs=chosen.repo_slices)
 
     report = run(
         paper,
         repo=repo,
         registry=registry,
-        has_provider=False,
         min_severity=Severity(args.min_severity) if args.min_severity else None,
         config=config,
+        prepared=chosen,
     )
     elapsed = time.perf_counter() - started
 
@@ -213,7 +233,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     check = sub.add_parser("check", help="check a paper")
-    check.add_argument("target", help="path to a .tex source file")
+    check.add_argument(
+        "target",
+        help="a .tex file, or an arXiv source bundle (.tar.gz / .zip)",
+    )
     check.add_argument("--repo", default=None, help="path to the paper's repository")
     check.add_argument(
         "--bib", default=None, help="bibliography (default: the .bib beside the source)"

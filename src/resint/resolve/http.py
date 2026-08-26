@@ -86,15 +86,70 @@ def normalize_doi(raw: str) -> str:
     return doi
 
 
+
+class Pacer:
+    """Per-index request spacing.
+
+    One global 20 requests/second across Crossref, OpenAlex *and* arXiv was
+    wrong in both directions: too slow for the first two, and far too fast for
+    arXiv, which asks for roughly three seconds between calls. Each index gets
+    its own interval and its own lock, so a slow one cannot stall the others.
+
+    The clock is injectable because a test that actually sleeps three seconds
+    is a test nobody runs.
+    """
+
+    #: Seconds between requests, per index.
+    DEFAULTS = {"crossref": 0.05, "openalex": 0.05, "arxiv": 3.0}
+
+    def __init__(self, intervals: dict | None = None, clock=None, sleep=None):
+        self.intervals = dict(self.DEFAULTS if intervals is None else intervals)
+        self._clock = clock or time.monotonic
+        self._sleep = sleep or time.sleep
+        self._last: dict = {}
+        self._lock = threading.Lock()
+
+    def wait(self, index: str) -> None:
+        interval = self.intervals.get(index, 0.05)
+        with self._lock:
+            previous = self._last.get(index)
+            # Never seen this index: nothing to space out from. Defaulting the
+            # timestamp to zero instead makes the very first request wait a
+            # full interval, which is invisible against a real monotonic clock
+            # and glaring against a fake one.
+            delay = 0.0 if previous is None else interval - (self._clock() - previous)
+            self._last[index] = self._clock() + max(delay, 0.0)
+        if delay > 0:
+            self._sleep(delay)
+
+
+#: Shared by default so several resolvers in one process still pace as one.
+_DEFAULT_PACER = Pacer()
+
+
+@dataclass
+class ResolvePolicy:
+    """How hard a run is allowed to push the indices."""
+
+    workers: int = 6
+    budget: float = 40.0
+    timeout: float = 5.0
+    pacer: Pacer | None = None
+
+    def paced_by(self) -> "Pacer":
+        return self.pacer or _DEFAULT_PACER
+
+
 @dataclass
 class HttpResolver:
     """Queries the public indices in order, stopping at the first real match."""
 
     mailto: str | None = None
     timeout: float = 5.0
-    pause: float = 0.05
-    _last_call: float = field(default=0.0, repr=False)
-    _pace: object = field(default_factory=threading.Lock, repr=False)
+    pacer: Pacer | None = None
+
+    def _paced(self) -> Pacer:
+        return self.pacer or _DEFAULT_PACER
 
     @property
     def indices(self) -> tuple[str, ...]:
@@ -102,14 +157,10 @@ class HttpResolver:
 
     # --- transport ------------------------------------------------------
 
-    def _get(self, url: str) -> dict | None:
+    def _get(self, url: str, index: str = "crossref") -> dict | None:
         """Fetch JSON. Returns None on any failure -- caller maps that to UNKNOWN."""
         # Serialise only the pacing decision, never the request itself.
-        with self._pace:
-            gap = time.monotonic() - self._last_call
-            if gap < self.pause:
-                time.sleep(self.pause - gap)
-            self._last_call = time.monotonic()
+        self._paced().wait(index)
 
         agent = USER_AGENT
         if self.mailto:
@@ -129,7 +180,7 @@ class HttpResolver:
     def _crossref(self, entry: BibEntry) -> Record | None:
         if entry.doi:
             doi = urllib.parse.quote(normalize_doi(entry.doi), safe="")
-            payload = self._get(f"https://api.crossref.org/works/{doi}")
+            payload = self._get(f"https://api.crossref.org/works/{doi}", "crossref")
             if payload and payload.get("message"):
                 return _from_crossref(payload["message"])
             return None
@@ -139,7 +190,7 @@ class HttpResolver:
         query = urllib.parse.urlencode(
             {"query.bibliographic": entry.title, "rows": "3"}
         )
-        payload = self._get(f"https://api.crossref.org/works?{query}")
+        payload = self._get(f"https://api.crossref.org/works?{query}", "crossref")
         if not payload:
             return None
         candidates = [
@@ -151,7 +202,7 @@ class HttpResolver:
     def _openalex(self, entry: BibEntry) -> Record | None:
         if entry.doi:
             doi = urllib.parse.quote(normalize_doi(entry.doi), safe="")
-            payload = self._get(f"https://api.openalex.org/works/doi:{doi}")
+            payload = self._get(f"https://api.openalex.org/works/doi:{doi}", "openalex")
             if payload and payload.get("id"):
                 return _from_openalex(payload)
             return None
@@ -159,7 +210,7 @@ class HttpResolver:
         if not entry.title:
             return None
         query = urllib.parse.urlencode({"search": entry.title, "per-page": "3"})
-        payload = self._get(f"https://api.openalex.org/works?{query}")
+        payload = self._get(f"https://api.openalex.org/works?{query}", "openalex")
         if not payload:
             return None
         candidates = [_from_openalex(item) for item in payload.get("results", [])]
@@ -172,7 +223,7 @@ class HttpResolver:
             {"search_query": f'ti:"{entry.title}"', "max_results": "3"}
         )
         # The arXiv API answers in Atom XML; a title probe is enough here.
-        raw = self._get_text(f"http://export.arxiv.org/api/query?{query}")
+        raw = self._get_text(f"http://export.arxiv.org/api/query?{query}", "arxiv")
         if raw is None:
             return None
         titles = re.findall(r"<title>(.*?)</title>", raw, re.DOTALL)
@@ -182,7 +233,8 @@ class HttpResolver:
         ]
         return _best(entry.title, candidates)
 
-    def _get_text(self, url: str) -> str | None:
+    def _get_text(self, url: str, index: str = "arxiv") -> str | None:
+        self._paced().wait(index)
         agent = USER_AGENT
         request = urllib.request.Request(url, headers={"User-Agent": agent})
         try:

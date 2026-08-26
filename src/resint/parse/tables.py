@@ -30,8 +30,39 @@ _RULE_CMD = re.compile(
 )
 _MULTICOLUMN = re.compile(r"\\multicolumn\s*\{\s*(\d+)\s*\}")
 _MULTIROW = re.compile(r"\\multirow\s*\{\s*(\d+)\s*\}")
+
+# The whole spanning form, so the content survives and the span count and
+# alignment specification do not.
+_SPANNING = re.compile(
+    r"\\multi(?:column|row)\s*\{[^{}]*\}\s*(?:\[[^\]]*\])?\s*\{[^{}]*\}\s*\{([^{}]*)\}"
+)
+
+# Layout commands whose braced arguments are measurements, not content.
+# Stripping the command but keeping the braces turns \rule{0pt}{2.0ex} into
+# the cell text "0pt2.0ex", which then reads as data.
+_LAYOUT_CMD = re.compile(
+    r"\\(?:rule|hspace|vspace|raisebox|makebox|parbox|resizebox|scalebox|"
+    r"adjustbox|rowcolor|cellcolor|columncolor|arrayrulecolor)\*?"
+    r"(?:\s*\[[^\]]*\])*(?:\s*\{[^{}]*\})*"
+)
 _MARKUP = re.compile(r"\\[a-zA-Z]+\s*\*?")
 _NUMBER = re.compile(r"[-+]?\d+(?:\.\d+)?")
+
+# A comment runs to end of line unless the % is escaped. Blanked rather than
+# removed so every offset in the source stays valid.
+_COMMENT = re.compile(r"(?<!\\)%[^\n]*")
+
+
+def uncomment(text: str) -> str:
+    """Blank out comment bodies, preserving length so offsets stay valid.
+
+    Tables are read from raw source rather than normalized text, because
+    normalization destroys the & and \\\\ that carry the grid. That means
+    comments have to be handled here too -- a real paper carries whole
+    commented-out tables from earlier drafts, and parsing one produces a
+    grid of \\hline rows that is reported as malformed.
+    """
+    return _COMMENT.sub(lambda m: " " * len(m.group(0)), text)
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,13 +139,32 @@ class Table:
 
 
 def _clean(raw: str) -> str:
-    text = _MULTICOLUMN.sub("", raw)
+    text = _LAYOUT_CMD.sub(" ", raw)
+    # \multicolumn{2}{c}{BLEU} -> BLEU. Dropping only the command leaves the
+    # alignment spec glued to the content as "cBLEU", which then fails to
+    # match the metric name the prose uses.
+    text = _SPANNING.sub(r"\1", text)
+    text = _MULTICOLUMN.sub("", text)
     text = _MULTIROW.sub("", text)
     text = _RULE_CMD.sub("", text)
     text = _MARKUP.sub(" ", text)
     text = text.replace("$", "").replace("{", "").replace("}", "")
     text = text.replace("\\%", "%").replace("~", " ")
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _anchor(doc, src: Source, raw: str, start: int, end: int, label: str) -> Span:
+    """Anchor a raw-text range, resolving it to its real file when spliced.
+
+    Without ``doc`` a cell in a multi-file paper is anchored to an offset in
+    the combined text, which corresponds to no file the author has open — and
+    puts the cell in a different coordinate system from the prose anchor it
+    gets compared against. That mismatch is invisible until something audits
+    it.
+    """
+    if doc is not None:
+        return doc.anchor(src, start, end, label)
+    return Span(src, start, max(end, start + 1), line=raw.count("\n", 0, start) + 1, label=label)
 
 
 def _split_rows(body: str) -> list[tuple[int, str]]:
@@ -190,11 +240,23 @@ def _surrounding_float(src: str, tabular_start: int) -> tuple[str, str, int]:
     return caption, label, opener
 
 
-def extract_tables(raw: str, src: Source) -> list[Table]:
-    """Every tabular in the source, as a grid of anchored cells."""
+def extract_tables(raw: str, src: Source, doc=None) -> list[Table]:
+    """Every tabular in the source, as a grid of anchored cells.
+
+    ``doc`` carries the region map for a document spliced from several
+    files. Without it, cells in a multi-file paper are anchored to offsets
+    in the combined text -- which corresponds to no file the author has
+    open, and puts a table anchor in a different coordinate system from
+    the prose anchor it is compared against.
+    """
     tables: list[Table] = []
 
-    for index, m in enumerate(_TABULAR.finditer(raw), 1):
+    # Offsets are preserved by blanking rather than deleting, so every span
+    # produced below still points at the right place in the file the user has
+    # open. Spans are taken from `raw`; only the parsing reads `scannable`.
+    scannable = uncomment(raw)
+
+    for index, m in enumerate(_TABULAR.finditer(scannable), 1):
         env = m.group(1)
         after = m.end()
 
@@ -203,29 +265,29 @@ def extract_tables(raw: str, src: Source) -> list[Table]:
         if env in ("tabular*", "tabularx"):
             while after < len(raw) and raw[after] in " \n":
                 after += 1
-            if after < len(raw) and raw[after] == "{":
-                after = _skip_group(raw, after)
+            if after < len(scannable) and scannable[after] == "{":
+                after = _skip_group(scannable, after)
         while after < len(raw) and raw[after] in " \n":
             after += 1
-        if after < len(raw) and raw[after] == "[":
-            close = raw.find("]", after)
+        if after < len(scannable) and scannable[after] == "[":
+            close = scannable.find("]", after)
             after = close + 1 if close != -1 else after
         while after < len(raw) and raw[after] in " \n":
             after += 1
 
         spec = ""
-        if after < len(raw) and raw[after] == "{":
-            body_start = _skip_group(raw, after)
-            spec = raw[after + 1 : body_start - 1]
+        if after < len(scannable) and scannable[after] == "{":
+            body_start = _skip_group(scannable, after)
+            spec = scannable[after + 1 : body_start - 1]
             after = body_start
 
         end_tag = f"\\end{{{env}}}"
-        stop = raw.find(end_tag, after)
+        stop = scannable.find(end_tag, after)
         if stop == -1:
             continue
 
-        body = raw[after:stop]
-        caption, label, float_start = _surrounding_float(raw, m.start())
+        body = scannable[after:stop]
+        caption, label, float_start = _surrounding_float(scannable, m.start())
 
         rows: list[list[TableCell]] = []
         for r, (row_offset, row_text) in enumerate(_split_rows(body)):
@@ -239,17 +301,17 @@ def extract_tables(raw: str, src: Source) -> list[Table]:
                 lead = len(cell_raw) - len(cell_raw.lstrip())
                 mc = _MULTICOLUMN.search(cell_raw)
                 colspan = int(mc.group(1)) if mc else 1
+                begin = span_start + lead
+                finish = max(begin + len(stripped), begin + 1)
+                # Not `label` — that name holds the table's own \label{} for
+                # the whole of this loop, and shadowing it silently gave every
+                # table the label of its last cell.
+                cell_label = f"table{index}:r{len(rows)}c{col}"
                 cells.append(
                     TableCell(
                         raw=cell_raw,
                         text=_clean(cell_raw),
-                        span=Span(
-                            src,
-                            span_start + lead,
-                            max(span_start + lead + len(stripped), span_start + lead + 1),
-                            line=raw.count("\n", 0, span_start + lead) + 1,
-                            label=f"table{index}:r{len(rows)}c{col}",
-                        ),
+                        span=_anchor(doc, src, raw, begin, finish, cell_label),
                         row=len(rows),
                         col=col,
                         colspan=colspan,
@@ -275,12 +337,8 @@ def extract_tables(raw: str, src: Source) -> list[Table]:
                 caption=caption,
                 label=label,
                 irregular=irregular,
-                span=Span(
-                    src,
-                    float_start,
-                    stop + len(end_tag),
-                    line=raw.count("\n", 0, float_start) + 1,
-                    label=f"table{index}",
+                span=_anchor(
+                    doc, src, raw, float_start, stop + len(end_tag), f"table{index}"
                 ),
             )
         )

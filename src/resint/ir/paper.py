@@ -181,6 +181,17 @@ class BibEntry:
     def likely_unindexed(self) -> bool:
         return self.entry_type in UNINDEXED_TYPES
 
+    @property
+    def from_bbl(self) -> bool:
+        """Whether this came from a compiled bibliography rather than a .bib.
+
+        BibTeX has already flattened the fields into rendered prose by that
+        point, so the title was recovered by convention and may be a
+        fragment. Rules that search an index on it should weigh a failure
+        less heavily than one against a field read directly.
+        """
+        return self.entry_type == "bibitem"
+
     def span_for(self, *names: str) -> Span:
         """Span of the first named field present, falling back to the entry."""
         for name in names:

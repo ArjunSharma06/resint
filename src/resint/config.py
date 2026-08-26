@@ -75,8 +75,11 @@ class Config:
             match = next((s for s in live if s.applies_to(finding)), None)
             out.append(finding.suppress(match.reason) if match else finding)
 
+        # Sorted, not set order. Anything that reaches output has to be
+        # deterministic or a two-run diff shows phantom churn on every paper,
+        # and the diff is what makes batch-fixing safe.
         used = {s.rule for f in out if f.suppressed for s in live if s.applies_to(f)}
-        for unused in {s.rule for s in live} - used:
+        for unused in sorted({s.rule for s in live} - used):
             notes.append(
                 f"suppression for {unused} matched nothing; the rule may have "
                 "changed or the finding may already be fixed"

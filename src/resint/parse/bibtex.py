@@ -93,7 +93,10 @@ def fold(text: str) -> str:
 @dataclass
 class BibFile:
     entries: list[BibEntry] = field(default_factory=list)
+    # Entries that could not be read at all, reported per entry.
     malformed: list[str] = field(default_factory=list)
+    # Complete sentences about the bibliography as a whole, reported as-is.
+    notes: list[str] = field(default_factory=list)
 
     def by_key(self) -> dict[str, BibEntry]:
         return {e.key: e for e in self.entries}

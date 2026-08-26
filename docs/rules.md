@@ -151,7 +151,7 @@ Entry types that legitimately sit outside the indices -- theses,     technical r
 
 A DOI that fails to resolve is treated as stronger evidence than a title     that fails to match, because a DOI is a claim about a specific registered     record rather than a string that might be spelled differently.
 
-**Cannot detect.** Genuinely obscure work absent from all four indices: theses, institutional reports, non-English venues, and very recent preprints. Severity is reduced for entry types where that is expected, but the rule cannot tell obscure from invented.
+**Cannot detect.** Genuinely obscure work absent from all four indices: theses, institutional reports, non-English venues, and very recent preprints. It also cannot tell a fabricated reference from a real one whose title was abbreviated in the bibliography, since a shortened title scores too low against the full record to count as a match. Severity is reduced wherever that is likely, but the rule cannot tell obscure from invented.
 
 <sub>Requires: `paper.bib`, `paper.resolutions`</sub>
 

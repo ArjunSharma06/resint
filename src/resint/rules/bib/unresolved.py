@@ -34,8 +34,11 @@ from ..registry import Context, rule
     cannot_detect=(
         "Genuinely obscure work absent from all four indices: theses, "
         "institutional reports, non-English venues, and very recent "
-        "preprints. Severity is reduced for entry types where that is "
-        "expected, but the rule cannot tell obscure from invented."
+        "preprints. It also cannot tell a fabricated reference from a real "
+        "one whose title was abbreviated in the bibliography, since a "
+        "shortened title scores too low against the full record to count as "
+        "a match. Severity is reduced wherever that is likely, but the rule "
+        "cannot tell obscure from invented."
     ),
 )
 def check(ctx: Context) -> Iterator:
@@ -53,6 +56,16 @@ def check(ctx: Context) -> Iterator:
                 "a matching record."
             )
             severity = "high"
+        elif entry.from_bbl:
+            # The title was recovered from rendered text, not read from a
+            # field. A failed search may mean the reference does not exist,
+            # or it may mean the title was reconstructed badly -- and those
+            # are not the same claim.
+            detail = (
+                "No index returned a matching record, though this title was "
+                "recovered from a compiled bibliography and may not be exact."
+            )
+            severity = "med"
         elif entry.likely_unindexed:
             detail = (
                 f"No match found, though {entry.entry_type} entries are often "

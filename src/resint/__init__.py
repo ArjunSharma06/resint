@@ -14,7 +14,7 @@ from .ir.span import Source, Span
 from .parse.document import paper_from_latex, paper_from_path
 from .rules import REGISTRY, Context, Registry, Rule, load_all, rule
 
-__version__ = "0.1.0"
+__version__ = "0.1.1.dev0"
 
 __all__ = [
     "Config",

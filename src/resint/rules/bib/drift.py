@@ -52,6 +52,12 @@ def title_overlap(left: str, right: str) -> float:
     ),
 )
 def check(ctx: Context) -> Iterator:
+    # Collected rather than reported one by one. A bibliography where most
+    # entries carry no DOI produces one abstention per entry, and thirty-odd
+    # identical lines drown the report exactly the way thirteen separate
+    # uncited-entry findings did.
+    guessed: list[str] = []
+
     for entry in ctx.paper.bib:
         resolution = ctx.paper.resolutions.get(entry.key)
         if resolution is None or resolution.status is not Status.FOUND:
@@ -68,10 +74,7 @@ def check(ctx: Context) -> Iterator:
         # records still count as existing, so bib/unresolved stays quiet;
         # they just cannot support a claim about metadata.
         if not record.authoritative:
-            ctx.abstain(
-                f"[{entry.key}] metadata not compared -- the record was found "
-                "by title search rather than by DOI, so it may be a different work"
-            )
+            guessed.append(entry.key)
             continue
 
         if entry.year and record.year and entry.year != record.year:
@@ -98,3 +101,14 @@ def check(ctx: Context) -> Iterator:
                     anchors=[entry.span_for("title"), entry.span],
                     fix="Check whether the key points at the intended reference.",
                 )
+
+    if guessed:
+        shown = ", ".join(f"[{k}]" for k in guessed[:4])
+        more = "" if len(guessed) <= 4 else f", and {len(guessed) - 4} more"
+        count = "1 entry" if len(guessed) == 1 else f"{len(guessed)} entries"
+        ctx.abstain(
+            f"metadata not compared for {count} -- resolved by title search "
+            f"rather than by DOI, so the record may be a different work: "
+            f"{shown}{more}. Adding a DOI to these entries would let them be "
+            "checked."
+        )

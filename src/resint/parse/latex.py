@@ -14,6 +14,8 @@ import re
 from bisect import bisect_right
 from dataclasses import dataclass, field
 
+from ..ir.span import Source, Span
+
 # Commands whose single braced argument is kept as running text.
 _KEEP_ARG = {
     "textbf", "textit", "textrm", "textsf", "texttt", "textsc", "textnormal",
@@ -84,7 +86,14 @@ class Normalized:
     offsets: list[int]
     raw: str
     sections: list[Section] = field(default_factory=list)
+    # Set when the document was spliced from several files. Lets a raw
+    # offset be translated back to the file it actually came from, so
+    # "results.tex:42" means line 42 of results.tex rather than line 42 of
+    # a concatenation that exists only inside this process.
+    regions: tuple = ()
+    files: dict | None = None
     _line_starts: list[int] = field(default_factory=list, repr=False)
+    _file_lines: dict = field(default_factory=dict, repr=False)
 
     def __post_init__(self) -> None:
         if len(self.offsets) != len(self.text):
@@ -113,7 +122,60 @@ class Normalized:
         return lo, max(hi, lo)
 
     def line_of(self, raw_offset: int) -> int:
-        return bisect_right(self._line_starts, raw_offset)
+        origin = self.origin_of(raw_offset)
+        if origin is None:
+            return bisect_right(self._line_starts, raw_offset)
+        _, local = origin
+        return bisect_right(self._starts_for(origin[0]), local)
+
+    def origin_of(self, raw_offset: int) -> tuple[str, int] | None:
+        """(filename, offset within that file) for a combined-text offset."""
+        for region in self.regions:
+            if region.start <= raw_offset < region.end:
+                return region.name, region.local(raw_offset)
+        return None
+
+    def _starts_for(self, name: str) -> list[int]:
+        cached = self._file_lines.get(name)
+        if cached is None:
+            text = (self.files or {}).get(name, "")
+            starts = [0]
+            for i, ch in enumerate(text):
+                if ch == "\n":
+                    starts.append(i + 1)
+            self._file_lines[name] = starts
+            cached = starts
+        return cached
+
+    def anchor(self, src, raw_start: int, raw_end: int, label: str = ""):
+        """A Span for a range of the *raw* text, resolved to its real file.
+
+        Extractors that work on raw source rather than normalized text --
+        tables, chiefly -- need this too. Doing the resolution in only one of
+        them produced findings whose two anchors were in different coordinate
+        systems: prose local to its included file, table cells offset into the
+        spliced whole. The line numbers on the second kind matched no file the
+        author had open.
+        """
+        origin = self.origin_of(raw_start)
+        if origin is None:
+            return Span(
+                src,
+                raw_start,
+                max(raw_end, raw_start + 1),
+                line=self.line_of(raw_start),
+                label=label or str(src),
+            )
+
+        name, local = origin
+        length = max(raw_end - raw_start, 1)
+        return Span(
+            Source(name, src.kind, path=name),
+            local,
+            local + length,
+            line=self.line_of(raw_start),
+            label=label or name,
+        )
 
     def section_at(self, index: int) -> str:
         for sec in self.sections:
@@ -191,7 +253,7 @@ def _skip_optional(src: str, i: int) -> int:
     return i
 
 
-def normalize(raw: str) -> Normalized:
+def normalize(raw: str, regions: tuple = (), files: dict | None = None) -> Normalized:
     """Normalize LaTeX source to running text, preserving source offsets."""
     macros = _find_macros(raw)
     out = _Writer()
@@ -330,5 +392,10 @@ def normalize(raw: str) -> Normalized:
         sections.append(Section(name, kind, start, out.pos))
 
     return Normalized(
-        text="".join(out.chars), offsets=out.offsets, raw=raw, sections=sections
+        text="".join(out.chars),
+        offsets=out.offsets,
+        raw=raw,
+        sections=sections,
+        regions=regions,
+        files=files,
     )

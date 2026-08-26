@@ -67,6 +67,58 @@ def required_slices(rules: list[Rule]) -> set[str]:
     return {req for r in rules for req in r.requires}
 
 
+@dataclass
+class Plan:
+    """Which rules will run, why the rest will not, and what data they need.
+
+    Selection has to happen *before* the paper is built, not after. Otherwise
+    the loader has no idea what to load and defaults to everything -- which
+    means a run with no bibliography rules still parses the bibliography and
+    still opens sockets. Computing the plan first makes the laziness the
+    architecture already describes actually true, and it stops selection
+    drifting between the call site that loads data and the one that runs
+    rules.
+    """
+
+    runnable: list[Rule] = field(default_factory=list)
+    skipped: dict[str, str] = field(default_factory=dict)
+
+    @property
+    def paper_slices(self) -> set[str]:
+        return {r for r in required_slices(self.runnable) if r.startswith("paper.")}
+
+    @property
+    def repo_slices(self) -> set[str]:
+        return {r for r in required_slices(self.runnable) if r.startswith("repo.")}
+
+    @property
+    def opens_network(self) -> bool:
+        """Whether anything in this plan can reach the network."""
+        return "paper.resolutions" in self.paper_slices
+
+
+def plan(
+    registry: Registry | None = None,
+    config: Config | None = None,
+    *,
+    has_repo: bool = False,
+    has_provider: bool = False,
+) -> Plan:
+    """Decide what will run, before any data is loaded."""
+    reg = registry or load_all()
+    settings = config or Config()
+
+    candidates = [r for r in reg.all() if settings.enabled(r.id)]
+    runnable, skipped = selectable(
+        candidates, has_repo=has_repo, has_provider=has_provider
+    )
+    for disabled in sorted(settings.disabled):
+        if disabled in reg:
+            skipped[disabled] = "disabled in .resint.yml"
+
+    return Plan(runnable=runnable, skipped=skipped)
+
+
 def run(
     paper,
     repo=None,
@@ -75,16 +127,16 @@ def run(
     has_provider: bool = False,
     min_severity: Severity | None = None,
     config: Config | None = None,
+    prepared: Plan | None = None,
 ) -> Report:
-    reg = registry or load_all()
     settings = config or Config()
-    candidates = [r for r in reg.all() if settings.enabled(r.id)]
-    runnable, skipped = selectable(
-        candidates, has_repo=repo is not None, has_provider=has_provider
+    chosen = prepared or plan(
+        registry,
+        settings,
+        has_repo=repo is not None,
+        has_provider=has_provider,
     )
-    for disabled in sorted(settings.disabled):
-        if disabled in reg:
-            skipped[disabled] = "disabled in .resint.yml"
+    runnable, skipped = chosen.runnable, dict(chosen.skipped)
 
     report = Report(skipped=skipped, ran=[r.id for r in runnable])
     report.unchecked = list(getattr(paper, "unchecked", []))
@@ -96,13 +148,6 @@ def run(
     for rule in runnable:
         report.findings.extend(rule.run(ctx))
     report.unchecked.extend(ctx.abstentions)
-
-    # Rules may discover during evaluation that an input was ambiguous.
-    # Those notes are collected after the run rather than before, since a
-    # rule abstaining is exactly the moment the reason becomes known.
-    for note in getattr(paper, "unchecked", []):
-        if note not in report.unchecked:
-            report.unchecked.append(note)
 
     # Suppression is a reporting concern, applied after every rule has run:
     # a suppressed finding still exists, is still counted in JSON, and can

@@ -12,3 +12,5 @@ htmlcov/
 .resint/
 *.sarif
 .DS_Store
+sweeps/
+.cache/

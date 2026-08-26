@@ -123,7 +123,8 @@ def test_drift_abstains_on_a_title_matched_record():
     findings = REG.get("bib/metadata-drift").run(ctx)
 
     assert findings == []
-    assert any("found by title search" in a for a in ctx.abstentions)
+    assert any("title search" in a for a in ctx.abstentions)
+    assert any("vaswani2017" in a for a in ctx.abstentions)
 
 
 def test_drift_still_fires_on_a_doi_matched_record():
@@ -134,6 +135,27 @@ def test_drift_still_fires_on_a_doi_matched_record():
 
     assert len(findings) == 1
     assert "2019" in findings[0].message and "2021" in findings[0].message
+
+
+def test_many_title_matches_produce_one_abstention_not_thirty():
+    """Thirty identical abstention lines drown the report just as badly."""
+    entries = [entry(f"k{i}", title=f"Title {i}", year="2020") for i in range(30)]
+    resolutions = {
+        e.key: Resolution(
+            Status.FOUND,
+            record=Record(
+                source="openalex", title=e.title, year="2021", matched_by="title"
+            ),
+        )
+        for e in entries
+    }
+    ctx = Context(paper=paper_with(entries, resolutions))
+    findings = REG.get("bib/metadata-drift").run(ctx)
+
+    assert findings == []
+    assert len(ctx.abstentions) == 1
+    assert "30 entries" in ctx.abstentions[0]
+    assert "and 26 more" in ctx.abstentions[0]
 
 
 def test_records_default_to_authoritative():
