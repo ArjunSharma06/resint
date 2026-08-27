@@ -3,9 +3,9 @@
     python tools/fetch_arxiv.py --count 100 --mailto you@example.org
     python tools/fetch_arxiv.py --count 40 --categories q-bio.QM,stat.AP
 
-Serial, three seconds apart, cached by arXiv id. One hundred papers takes
-about five minutes, once — after that every sweep runs offline at full speed,
-which is what makes a fix-and-re-run loop viable at all.
+Serial, six seconds apart, cached by arXiv id. Two hundred and fifty papers
+takes about twenty-five minutes, once — after that every sweep runs offline at
+full speed, which is what makes a fix-and-re-run loop viable at all.
 
 **Do not parallelise this.** Fanning out e-print downloads is how a project
 gets its IP blocked, and the download is a one-off while the sweep is the
@@ -42,8 +42,12 @@ from resint.resolve.http import USER_AGENT  # noqa: E402
 API = "http://export.arxiv.org/api/query"
 EPRINT = "https://arxiv.org/e-print/{}"
 
-# arXiv asks for roughly three seconds between requests. Honour it.
-POLITE_SECONDS = 3.0
+# arXiv asks for roughly three seconds between requests. Six is deliberately
+# more than asked: a 400-paper corpus is a much larger favour than a handful,
+# it is fetched once and reused offline forever, and nothing downstream is
+# waiting on it. Being slower than required costs a quarter of an hour once
+# and removes any argument that this was rude.
+POLITE_SECONDS = 6.0
 DEFAULT_CACHE = Path.home() / ".cache" / "resint" / "eprints"
 
 DEFAULT_CATEGORIES = (

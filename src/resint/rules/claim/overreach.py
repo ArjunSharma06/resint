@@ -127,14 +127,50 @@ def _margin(ours: Decimal, baseline: Decimal) -> float | None:
     return float((ours - baseline) / abs(baseline))
 
 
+#: Ceiling on the rendered tables in one prompt. The paper text is already
+#: windowed; the tables were not, and a paper carrying thirty of them built a
+#: request large enough for Groq to refuse outright with HTTP 413. Five of
+#: thirty-five calls in the first real run died that way, which the rule
+#: reported as an honest abstention -- so it looked like a paper with nothing
+#: to find rather than a rule that could never run.
+MAX_TABLE_CHARS = 6_000
+
+#: Rows past this in one table are a data dump, not a results table. Truncating
+#: keeps the header and the first rows, which is where a headline result sits.
+MAX_TABLE_ROWS = 40
+
+
 def _render(tables) -> str:
-    out = []
+    """The tables as text, capped so the request cannot be refused.
+
+    Truncation is announced in the prompt rather than silent. A model told
+    that rows were omitted can decline to answer about them; a model handed a
+    quietly shortened table will compare the numbers it was given as though
+    they were all of them.
+    """
+    out: list[str] = []
+    budget = MAX_TABLE_CHARS
+    dropped = 0
+
     for table in tables:
         if table.irregular:
             continue
-        out.append(f"--- Table {table.index} {table.caption}".strip())
-        for row in table.rows:
-            out.append(" | ".join(cell.text for cell in row))
+
+        block = [f"--- Table {table.index} {table.caption}".strip()]
+        for row in table.rows[:MAX_TABLE_ROWS]:
+            block.append(" | ".join(cell.text for cell in row))
+        if len(table.rows) > MAX_TABLE_ROWS:
+            block.append(f"[{len(table.rows) - MAX_TABLE_ROWS} further rows omitted]")
+
+        rendered = "\n".join(block)
+        if len(rendered) > budget:
+            dropped += 1
+            continue
+        out.append(rendered)
+        budget -= len(rendered) + 1
+
+    if dropped:
+        out.append(f"[{dropped} further tables omitted for length]")
     return "\n".join(out)
 
 

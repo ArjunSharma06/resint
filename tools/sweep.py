@@ -110,7 +110,22 @@ def _summarise(records: list[PaperRecord]) -> None:
             bar = "#" * round(20 * hits / len(asked)) if asked else ""
             print(f"    {key:<16} {hits:>4}/{len(asked):<4} {bar}")
 
-        never = {s.split(".", 1)[1] for r in ok for s in r.needs} - set(names)
+        # Reported separately because it is measured in characters, not items,
+        # so it does not belong on a bar chart of "papers where the extractor
+        # found anything".
+        sized = [r.slice_census["text_chars"] for r in ok if r.slice_census.get("text_chars")]
+        if sized:
+            sized.sort()
+            print(f"    {'text':<16} {len(sized):>4}/{len(ok):<4} "
+                  f"median {sized[len(sized) // 2]:,} chars")
+
+        # The census names a slice "text_chars" where the requirement is called
+        # "paper.text", so a straight set difference reported text as never
+        # populated on every run -- while every prose rule was working from it.
+        # A false alarm here costs someone an afternoon hunting a bug that is
+        # not there, which is the same failure the census exists to prevent.
+        measured = set(names) | {"text"}
+        never = {s.split(".", 1)[1] for r in ok for s in r.needs} - measured
         if never:
             print(f"    (requested but never populated: {', '.join(sorted(never))})")
 

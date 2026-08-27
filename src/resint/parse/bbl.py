@@ -52,7 +52,23 @@ def _strip_trailing(text: str) -> str:
     return text.strip(".,;: ").strip()
 
 
-def parse(text: str, src: Source) -> BibFile:
+def _anchor(doc, src: Source, text: str, start: int, end: int, label: str) -> Span:
+    """Anchor a range, resolving it to its real file when spliced.
+
+    A submission that inlines its bibliography has no separate file: the
+    entries sit inside the LaTeX, so ``text`` here is the whole spliced
+    document and every offset needs the same region resolution the prose gets.
+    Without it a two-file paper reported its bibliography entries fifteen lines
+    below where they are.
+    """
+    if doc is not None:
+        return doc.anchor(src, start, end, label)
+    return Span(
+        src, start, max(end, start + 1), line=text.count("\n", 0, start) + 1, label=label
+    )
+
+
+def parse(text: str, src: Source, doc=None) -> BibFile:
     """Parse a compiled bibliography into entries.
 
     Only the key is read directly; everything else is inferred from the
@@ -97,12 +113,13 @@ def parse(text: str, src: Source) -> BibFile:
             if len(title) >= _MIN_TITLE:
                 fields["title"] = title
                 offset = start + body.find(chunks[1])
-                field_spans["title"] = Span(
+                field_spans["title"] = _anchor(
+                    doc,
                     src,
+                    text,
                     max(offset, start),
                     max(offset, start) + len(title),
-                    line=text.count("\n", 0, max(offset, start)) + 1,
-                    label=f"[{key}].title",
+                    f"[{key}].title",
                 )
             if len(chunks) > 2:
                 fields["journal"] = _strip_trailing(clean_value(chunks[2]))[:200]
@@ -127,13 +144,7 @@ def parse(text: str, src: Source) -> BibFile:
                 key=key,
                 entry_type="bibitem",
                 fields=fields,
-                span=Span(
-                    src,
-                    match.start(),
-                    end,
-                    line=text.count("\n", 0, match.start()) + 1,
-                    label=f"[{key}]",
-                ),
+                span=_anchor(doc, src, text, match.start(), end, f"[{key}]"),
                 field_spans=field_spans,
             )
         )

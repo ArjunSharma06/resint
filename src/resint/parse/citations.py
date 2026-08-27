@@ -31,7 +31,24 @@ def _uncommented(text: str) -> str:
     return _COMMENT_LINE.sub(lambda m: " " * len(m.group(0)), text)
 
 
-def extract_citations(raw: str, src: Source) -> list[Citation]:
+def _anchor(doc, src: Source, raw: str, start: int, end: int, label: str) -> Span:
+    """Anchor a raw-text range, resolving it to its real file when spliced.
+
+    Without ``doc`` a citation in a multi-file paper carries an offset into the
+    combined text while naming the root file -- a coordinate system matching no
+    file on disk. A twelve-file submission produced an offset of 47,438 into a
+    root file 15,585 characters long, and in a two-file one the offset resolved
+    but the line number was fifteen too high, counted over content spliced in
+    ahead of it. The anchor audit was the only thing that noticed either.
+    """
+    if doc is not None:
+        return doc.anchor(src, start, end, label)
+    return Span(
+        src, start, max(end, start + 1), line=raw.count("\n", 0, start) + 1, label=label
+    )
+
+
+def extract_citations(raw: str, src: Source, doc=None) -> list[Citation]:
     """Every citation use site, one record per key per site."""
     scannable = _uncommented(raw)
     out: list[Citation] = []
@@ -49,12 +66,13 @@ def extract_citations(raw: str, src: Source) -> list[Citation]:
                     Citation(
                         key=key,
                         command=m.group("cmd").lower(),
-                        span=Span(
+                        span=_anchor(
+                            doc,
                             src,
+                            raw,
                             offset,
                             offset + len(key),
-                            line=raw.count("\n", 0, offset) + 1,
-                            label=f"\\{m.group('cmd')}{{{key}}}",
+                            f"\\{m.group('cmd')}{{{key}}}",
                         ),
                     )
                 )

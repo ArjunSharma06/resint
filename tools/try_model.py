@@ -54,10 +54,31 @@ from resint.rules.registry import Context  # noqa: E402
 
 DEFAULT_CACHE = Path.home() / ".cache" / "resint" / "eprints"
 
-#: Fields in a model reply that are supposed to be verbatim quotes. Checked
-#: against the paper directly, so this measurement does not depend on any
-#: rule's internal handling being right.
-QUOTE_FIELDS = ("claim", "ours", "baseline", "quote", "manuscript_quote", "cited_quote")
+#: Which fields of a reply hold prose quoted from the paper, per rule.
+#:
+#: Per rule, because the same field name means different things. In
+#: baseline-fairness, "ours" and "baseline" are sentences and belong here. In
+#: overreach they are numbers copied out of a table, verified against cells by
+#: the rule itself -- checking those with locate() reported "23" and "44" as
+#: hallucinations and dragged a true 97% down to 90%.
+#:
+#: That is the second time this tool has invented a failure rate. A number
+#: that looks like evidence and is an artifact is the exact hazard this whole
+#: tier is built to avoid, so the measurement gets the same scrutiny the rules
+#: do.
+QUOTE_FIELDS_BY_RULE = {
+    "overreach/1": ("claim",),
+    "baseline-fairness/1": ("ours", "baseline"),
+    "scope-creep/1": ("scope_claims",),
+    "unimplemented/1": ("claim",),
+    "unsupported/1": ("claim",),
+    "citation-support/1": ("manuscript_quote", "cited_quote"),
+}
+
+#: Used when a prompt_version is not in the table above -- a new rule, or one
+#: whose version was bumped. Deliberately broad: over-reporting a failure is
+#: safer than a rule quietly going unmeasured.
+QUOTE_FIELDS = ("claim", "quote", "manuscript_quote", "cited_quote")
 
 
 class Capturing:
@@ -95,15 +116,24 @@ class Watching:
         return answer
 
 
-def quotes_in(payload) -> list[str]:
-    """Every string a model offered as a verbatim quote, at any depth."""
+def quotes_in(payload, rule: str = "") -> list[str]:
+    """Every string this rule offered as prose quoted from the paper.
+
+    Numeric fields are excluded by construction rather than filtered out
+    afterwards, because a filter on length would also discard a genuinely
+    short hallucinated quote.
+    """
+    wanted = QUOTE_FIELDS_BY_RULE.get(rule, QUOTE_FIELDS)
     found: list[str] = []
 
     def walk(node):
         if isinstance(node, dict):
             for key, value in node.items():
-                if key in QUOTE_FIELDS and isinstance(value, str):
-                    found.append(value)
+                if key in wanted:
+                    if isinstance(value, str):
+                        found.append(value)
+                    elif isinstance(value, list):
+                        found.extend(v for v in value if isinstance(v, str))
                 else:
                     walk(value)
         elif isinstance(node, list):
@@ -403,7 +433,7 @@ def live_run(found, registry, watcher, args) -> int:
                 failures[answer.detail[:90] or answer.outcome.value] += 1
                 continue
             verified["usable_replies"] += 1
-            for quote in quotes_in(answer.payload):
+            for quote in quotes_in(answer.payload, exchange["rule"]):
                 verified["quotes"] += 1
                 found = locate(quote, text)
                 verified[found.verdict.value] += 1

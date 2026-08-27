@@ -555,3 +555,44 @@ def test_every_rule_is_skipped_without_a_provider(rule, paper, _answer, needs):
 def test_every_rule_declares_its_blind_spots(rule, paper, _answer, needs):
     assert len(rule.cannot_detect) > 80
     assert rule.tier.value == "model-assisted"
+
+
+def test_tables_are_capped_so_a_request_cannot_be_refused():
+    """A paper carrying thirty tables built a request Groq refused outright
+    with HTTP 413 -- and the rule reported that as an honest abstention, so it
+    read as a paper with nothing to find rather than a rule that never ran."""
+    from resint.rules.claim.overreach import MAX_TABLE_CHARS, _render
+
+    class _Cell:
+        def __init__(self, text):
+            self.text = text
+
+    class _Table:
+        irregular = False
+
+        def __init__(self, index):
+            self.index = index
+            self.caption = "a table with a reasonably long caption on it"
+            self.rows = [[_Cell(f"value {n} {c}") for c in range(8)] for n in range(60)]
+
+    rendered = _render([_Table(i) for i in range(30)])
+    assert len(rendered) <= MAX_TABLE_CHARS + 200
+    assert "omitted" in rendered, "truncation must be announced, never silent"
+
+
+def test_a_long_table_keeps_its_head_and_says_what_it_dropped():
+    from resint.rules.claim.overreach import MAX_TABLE_ROWS, _render
+
+    class _Cell:
+        def __init__(self, text):
+            self.text = text
+
+    class _Table:
+        irregular = False
+        index = 1
+        caption = "results"
+        rows = [[_Cell(f"row{n}")] for n in range(MAX_TABLE_ROWS + 15)]
+
+    rendered = _render([_Table()])
+    assert "row0" in rendered
+    assert "15 further rows omitted" in rendered

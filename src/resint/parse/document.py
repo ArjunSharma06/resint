@@ -212,7 +212,7 @@ def paper_from_latex(
     # Claims are built out of citations, so the citation pass has to run even
     # when only the claims were asked for.
     if {"paper.citations", "paper.claims"} & wanted:
-        paper.citations = extract_citations(text, src)
+        paper.citations = extract_citations(text, src, doc)
 
     if "paper.claims" in wanted:
         paper.claims = extract_claims(doc, src, paper.citations, doc.sections)
@@ -234,7 +234,15 @@ def paper_from_latex(
         else:
             bib_src = Source(bib_id, "bib", path=bib_id)
             compiled = bib_kind == "bbl" or looks_like_bbl(bib_text)
-            parsed = (parse_bbl if compiled else parse_bibtex)(bib_text, bib_src)
+            if compiled:
+                # Only when the bibliography is the document itself do its
+                # offsets need region resolution. A separate .bib or .bbl file
+                # is never spliced, so its offsets are already local to it --
+                # passing doc there would resolve them against the wrong text.
+                inlined = doc if bib_text is text else None
+                parsed = parse_bbl(bib_text, bib_src, inlined)
+            else:
+                parsed = parse_bibtex(bib_text, bib_src)
             paper.bib = parsed.entries
             for bad in parsed.malformed:
                 paper.unchecked.append(f"bibliography entry skipped: {bad}")
