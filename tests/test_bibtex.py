@@ -211,3 +211,156 @@ def test_citation_spans_point_at_the_key_in_source():
 def test_citation_line_numbers_are_right():
     raw = "line one\nline two\nSee \\cite{k2020}.\n"
     assert extract_citations(raw, TEX)[0].span.line == 3
+
+
+def test_citations_inside_the_bibliography_are_not_use_sites():
+    r"""natbib writes real \cite-shaped commands into its rendered labels:
+
+        \bibitem[\protect\citeauthoryear{Duan, Hong, and Gu}{Duan
+          et~al.}{2017}]{duan2017}
+
+    \citeauthoryear matches the citation pattern, but its argument holds
+    author names, not keys. Splitting on commas turned one reference into
+    phantom citations of "Duan", "Hong" and "and Gu" -- across 204 real
+    papers this was the largest single source of false positives in the tool.
+    """
+    raw = (
+        r"We build on prior work \citep{duan2017}." "\n"
+        r"\begin{thebibliography}{9}" "\n"
+        r"\bibitem[\protect\citeauthoryear{Duan, Hong, and Gu}{Duan et~al.}{2017}]{duan2017}"
+        "\n"
+        r"Duan and others. A paper." "\n"
+        r"\end{thebibliography}" "\n"
+    )
+    assert [c.key for c in extract_citations(raw, TEX)] == ["duan2017"]
+
+
+def test_a_macro_template_is_not_a_citation():
+    r"""\cite{#1} inside \newcommand is a definition, not a use site."""
+    raw = r"\newcommand{\myref}[1]{\cite{#1}}" "\n" r"Real use \cite{smith2020}." "\n"
+    assert [c.key for c in extract_citations(raw, TEX)] == ["smith2020"]
+
+
+def test_an_unterminated_bibliography_still_stops_scanning():
+    """A truncated source must not reopen the whole reference list."""
+    raw = (
+        r"Cited \citep{real2020}." "\n"
+        r"\begin{thebibliography}{9}" "\n"
+        r"\bibitem[\protect\citeauthoryear{Smith and Jones}{Smith}{2019}]{s2019}" "\n"
+    )
+    assert [c.key for c in extract_citations(raw, TEX)] == ["real2020"]
+
+
+def test_a_real_citation_after_the_bibliography_is_still_found():
+    """Blanking must be length-preserving and bounded, not a truncation."""
+    raw = (
+        r"\begin{thebibliography}{9}" "\n"
+        r"\bibitem{a2020} A paper." "\n"
+        r"\end{thebibliography}" "\n"
+        r"Appendix cites \cite{b2021}." "\n"
+    )
+    found = extract_citations(raw, TEX)
+    assert [c.key for c in found] == ["b2021"]
+    assert raw[found[0].span.start : found[0].span.end] == "b2021"
+
+
+def test_a_macro_definition_is_not_a_citation():
+    r"""Pandoc emits \newcommand{\citeproc}[2]{...\cite-shaped...}, and the
+    commands inside a definition are a template: there is no key there to
+    resolve. Reading them as uses reported "#1" and "mm" as cited-but-undefined
+    on every pandoc-produced paper in the corpus."""
+    raw = (
+        r"\newcommand{\citeproc}[2]{\hyper@linkstart{cite}{ref-#1}{#2}}" "\n"
+        r"Real use \citep{smith2020}." "\n"
+    )
+    assert [c.key for c in extract_citations(raw, TEX)] == ["smith2020"]
+
+
+def test_a_nested_macro_body_is_skipped_whole():
+    r"""Brace matching, not a regex: the naive pattern stops at the first
+    closing brace and leaves the rest of the body exposed."""
+    raw = (
+        r"\newcommand{\wrap}[1]{{\small \cite{#1} {\emph{\cite{inner}}}}}" "\n"
+        r"Text \cite{real2021}." "\n"
+    )
+    assert [c.key for c in extract_citations(raw, TEX)] == ["real2021"]
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        r"\renewcommand{\foo}{\cite{ghost}}",
+        r"\providecommand{\foo}{\cite{ghost}}",
+        r"\DeclareRobustCommand{\foo}{\cite{ghost}}",
+        r"\def\foo{\cite{ghost}}",
+        r"\newcommand*{\foo}[2][x]{\cite{ghost}}",
+    ],
+)
+def test_every_definition_form_is_skipped(definition):
+    raw = definition + "\n" r"Body \cite{kept2020}." "\n"
+    assert [c.key for c in extract_citations(raw, TEX)] == ["kept2020"]
+
+
+def test_blanking_a_macro_keeps_offsets_and_lines_truthful():
+    raw = (
+        r"\newcommand{\foo}[1]{\cite{#1}}" "\n"
+        r"\cite{real2020}" "\n"
+    )
+    found = extract_citations(raw, TEX)
+    assert len(found) == 1
+    span = found[0].span
+    assert raw[span.start : span.end] == "real2020"
+    assert span.line == 2
+
+
+def test_an_xparse_argument_spec_is_not_a_citation_key():
+    r"""pandoc writes its citation macro with xparse:
+
+        \NewDocumentCommand\citeproc{mm}{\begingroup...\cite{#1}\endgroup}
+
+    where {mm} is the argument specification -- "two mandatory arguments".
+    Read as a citation it became a key named "mm", reported as
+    cited-but-undefined on every pandoc-produced paper in the corpus.
+
+    Note it is the *name and spec* that match the citation pattern, before
+    the body is reached, so blanking only the body leaves the phantom key.
+    """
+    raw = (
+        r"\NewDocumentCommand\citeproc{mm}{%" "\n"
+        r"  \begingroup\def\citeproctext{#2}\cite{#1}\endgroup}" "\n"
+        r"As shown \citeproc{ref-smith2020}{Smith 2020}." "\n"
+    )
+    assert [c.key for c in extract_citations(raw, TEX)] == ["ref-smith2020"]
+
+
+@pytest.mark.parametrize(
+    "form",
+    [
+        r"\NewDocumentCommand\foo{mm}{\cite{ghost}}",
+        r"\RenewDocumentCommand\foo{m}{\cite{ghost}}",
+        r"\ProvideDocumentCommand\foo{}{\cite{ghost}}",
+        r"\DeclareDocumentCommand\foo{o m}{\cite{ghost}}",
+    ],
+)
+def test_every_xparse_form_is_skipped(form):
+    raw = form + "\n" r"Body \cite{kept2020}." "\n"
+    assert [c.key for c in extract_citations(raw, TEX)] == ["kept2020"]
+
+
+@pytest.mark.parametrize(
+    "stated, canonical, drifted",
+    [
+        ("2015a", "2015", False),   # BibTeX disambiguation, not drift
+        ("2015b", "2015", False),
+        ("2015", "2015", False),
+        ("2015", "2017", True),     # real drift: preprint vs proceedings
+        ("in press", "2015", False),  # no year stated at all
+    ],
+)
+def test_a_disambiguation_suffix_is_not_a_different_year(stated, canonical, drifted):
+    """A bibliography using the 2015a/2015b convention had most of its entries
+    reported as drifted, because the index has no equivalent to compare with."""
+    from resint.rules.bib.drift import _year_digits
+
+    a, b = _year_digits(stated), _year_digits(canonical)
+    assert bool(a and b and a != b) is drifted

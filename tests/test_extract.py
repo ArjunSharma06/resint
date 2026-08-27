@@ -170,3 +170,60 @@ def test_abbreviations_do_not_split_sentences():
 
 def test_genuine_boundaries_do_split():
     assert len(sentences("First sentence here. Second sentence here.")) == 2
+
+
+def test_a_decimal_comma_is_read_as_a_decimal():
+    """Most of continental Europe and Latin America writes p < 0,001 and
+    F(1, 791) = 18,65. Reading only the point turned those into 0 and 18, and
+    the recomputation then disagreed with the (also misread) reported value --
+    a confident finding built on two wrong numbers. The first Brazilian paper
+    in the corpus produced exactly that.
+    """
+    doc = normalize("Houve diferenca, com F(1, 791) = 18,65; p < 0,001.")
+    stats = extract_stats(doc, SRC)
+    assert len(stats) == 1
+    assert stats[0].statistic == 18.65
+    assert stats[0].p_reported == 0.001
+    assert stats[0].df1 == 1 and stats[0].df2 == 791
+
+
+def test_the_comma_between_degrees_of_freedom_is_still_a_separator():
+    """F(1, 791) is two numbers, not one. The fix must not reach into it."""
+    doc = normalize("Result F(2, 20) = 4.11, p = .03.")
+    stat = extract_stats(doc, SRC)[0]
+    assert (stat.df1, stat.df2) == (2.0, 20.0)
+    assert stat.statistic == 4.11
+
+
+def test_a_decimal_point_still_works():
+    doc = normalize("Reliable, t(20) = 2.086, p = .03.")
+    stat = extract_stats(doc, SRC)[0]
+    assert stat.statistic == 2.086
+    assert stat.p_reported == 0.03
+
+
+def test_precision_survives_a_decimal_comma():
+    """GRIM needs the stated granularity, so "3,470" must stay three decimals."""
+    doc = normalize("The mean was 3,470 for N = 20 participants.")
+    mean = extract_means(doc, SRC).means[0]
+    assert mean.decimals == 3
+    assert float(mean.value) == 3.470
+
+
+def test_a_rule_never_converts_a_reported_value_itself():
+    """stats/pvalue.py kept its own Decimal(p_raw.strip()) and so still read a
+    comma as a syntax error after the IR had learned to handle it -- a crash on
+    the first Brazilian paper swept. One conversion point, and this asserts
+    nothing has grown a second one."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parents[1] / "src" / "resint"
+    offenders = []
+    for path in root.rglob("*.py"):
+        if path.name == "paper.py":
+            continue  # where the conversion legitimately lives
+        for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            if re.search(r"(?:Decimal|float)\(\s*\w*\.?(?:p_raw|statistic_raw)", line):
+                offenders.append(f"{path.name}:{n}: {line.strip()}")
+    assert not offenders, "convert via decimal_text/p_exact instead:\n" + "\n".join(offenders)

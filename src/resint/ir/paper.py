@@ -22,8 +22,35 @@ TestKind = Literal["t", "F", "chi2", "r", "z"]
 PComparator = Literal["=", "<", ">"]
 
 
+def decimal_text(raw: str) -> str:
+    """A reported number with the paper's decimal separator normalised.
+
+    The single place that knows about this. stats/pvalue.py did its own
+    ``Decimal(p_raw.strip())`` and so kept reading a comma as a syntax error
+    after the IR had learned to handle it -- a crash on the first Brazilian
+    paper swept, and the same two-places-one-fix shape as the sweep parsing
+    JATS as LaTeX.
+    """
+    return raw.strip().replace(",", ".")
+
+
+def decimal_value(raw: str) -> float:
+    """A reported number, whichever decimal separator the paper uses.
+
+    Most of continental Europe and Latin America writes ``p < 0,001`` and
+    ``F(1, 791) = 18,65``. Reading only the point turned those into 0 and 18 --
+    and the resulting recomputation disagreed with the (also misread) reported
+    value, so the rule emitted a confident finding built on two wrong numbers.
+    Found on the first Brazilian paper the corpus contained.
+
+    Only ever applied to a statistic or a p-value, never to degrees of freedom,
+    where the comma in ``F(1, 791)`` really is a separator.
+    """
+    return float(decimal_text(raw))
+
+
 def _decimals(raw: str) -> int:
-    _, _, frac = raw.strip().partition(".")
+    _, _, frac = decimal_text(raw).partition(".")
     return len(frac)
 
 
@@ -43,7 +70,11 @@ class ReportedMean:
 
     @property
     def value(self) -> Decimal:
-        return Decimal(self.raw.strip())
+        # A mean is read in the same breath as the p-values beside it, so it
+        # follows the paper's convention. Number.value deliberately does not:
+        # a table cell reading "1,234" is as likely to be thousands, and no
+        # pattern feeding it was widened.
+        return Decimal(decimal_text(self.raw))
 
     @property
     def decimals(self) -> int:
@@ -72,11 +103,16 @@ class StatTest:
 
     @property
     def statistic(self) -> float:
-        return float(self.statistic_raw)
+        return decimal_value(self.statistic_raw)
 
     @property
     def p_reported(self) -> float:
-        return float(self.p_raw)
+        return decimal_value(self.p_raw)
+
+    @property
+    def p_exact(self) -> Decimal:
+        """The reported p at full precision, for rules that must not lose it."""
+        return Decimal(decimal_text(self.p_raw))
 
     @property
     def p_decimals(self) -> int:

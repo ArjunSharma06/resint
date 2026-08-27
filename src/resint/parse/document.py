@@ -13,6 +13,8 @@ than one that names its blind spots.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from pathlib import Path
 
 from ..ir.paper import Paper, TextSlice
@@ -90,6 +92,45 @@ def resolve_bibliography(source, path, bib=None) -> tuple[str | None, str]:
     return None, source.bib_name
 
 
+def paper_from_source_if_jats(
+    source,
+    needs: set[str] | None = None,
+    resolver: Resolver | None = None,
+    progress=None,
+    policy: ResolvePolicy | None = None,
+    full_text=None,
+) -> Paper | None:
+    """A Paper if this acquired source is JATS, else None.
+
+    Shared by ``paper_from_path`` and the sweep runner for the same reason
+    ``resolve_bibliography`` is: the two must not disagree about what the input
+    is. They did. The sweep called ``paper_from_latex`` directly, so six real
+    PubMed Central articles were parsed as LaTeX -- prose survived, because
+    stripping XML tags leaves the words behind, and every structural extractor
+    silently found nothing. Coverage read ``bib 0/6, citations 0/6, tables
+    0/6`` and looked like six unusual papers rather than one wrong branch.
+
+    Content decides, never the extension: the same rule the PDF sniffing
+    follows. PMC serves .nxml, .xml and bare downloads, and an .xml file is
+    not necessarily a paper at all.
+    """
+    from .jats import looks_like_jats
+
+    if not looks_like_jats(source.text):
+        return None
+
+    return paper_from_jats(
+        source.text,
+        source_id=source.name,
+        path=source.path,
+        needs=needs,
+        resolver=resolver,
+        progress=progress,
+        policy=policy,
+        full_text=full_text,
+    )
+
+
 def _fetch_cited(paper: Paper, source, progress=None) -> dict:
     """Download the cited papers that some claim actually rests on.
 
@@ -147,6 +188,99 @@ def _body_start(raw: str, offsets) -> int:
     return 0
 
 
+def _latex_bibliography(text, src, doc, bib_text, bib_id, bib_kind, source_id):
+    """Where a LaTeX paper's references live: a .bib, a .bbl, or the document."""
+    if bib_text is None and looks_like_bbl(text):
+        # A submission that inlines its compiled bibliography carries no
+        # separate file at all -- the thebibliography environment sits in the
+        # source. Very common on arXiv, where inlining lets the paper compile
+        # without running BibTeX.
+        bib_text, bib_id, bib_kind = text, source_id, "bbl"
+
+    if bib_text is None:
+        return None
+
+    bib_src = Source(bib_id, "bib", path=bib_id)
+    if bib_kind == "bbl" or looks_like_bbl(bib_text):
+        # Only when the bibliography is the document itself do its offsets
+        # need region resolution. A separate .bib or .bbl file is never
+        # spliced, so its offsets are already local to it -- passing doc there
+        # would resolve them against the wrong text.
+        return parse_bbl(bib_text, bib_src, doc if bib_text is text else None)
+    return parse_bibtex(bib_text, bib_src)
+
+
+def _jats_bibliography(text, src, doc, bib_text, bib_id, bib_kind, source_id):
+    """A journal article carries its references inside itself, always."""
+    from .jats_parts import extract_bib as jats_bib
+
+    return jats_bib(text, src, doc)
+
+
+@dataclass(frozen=True)
+class Dialect:
+    """The three things that differ between input formats.
+
+    Everything after these -- numbers, statistics, means, claims, resolution,
+    the anchor audit -- is shared, which is the whole point: a rule reads a
+    journal article and a preprint through one IR and cannot tell which it was
+    given. Parameterising the differences rather than forking the function is
+    what keeps that true as rules are added.
+    """
+
+    kind: str
+    normalize: object
+    tables: object
+    citations: object
+    bibliography: object
+
+
+LATEX = Dialect(
+    kind="latex",
+    normalize=lambda text, regions, files: normalize(text, regions=regions, files=files),
+    tables=extract_tables,
+    citations=extract_citations,
+    bibliography=_latex_bibliography,
+)
+
+
+def _jats_dialect() -> Dialect:
+    from . import jats as jats_module
+    from . import jats_parts
+
+    return Dialect(
+        kind="jats",
+        normalize=lambda text, regions, files: jats_module.normalize(text),
+        tables=jats_parts.extract_tables,
+        citations=jats_parts.extract_citations,
+        bibliography=_jats_bibliography,
+    )
+
+
+def paper_from_jats(
+    text: str,
+    source_id: str = "article.nxml",
+    path: str | None = None,
+    needs: set[str] | None = None,
+    resolver: Resolver | None = None,
+    progress=None,
+    policy: ResolvePolicy | None = None,
+    full_text=None,
+) -> Paper:
+    """Build a Paper from a JATS XML article, as PubMed Central serves them."""
+    return _build(
+        text,
+        _jats_dialect(),
+        source_id=source_id,
+        path=path,
+        needs=needs,
+        resolver=resolver,
+        progress=progress,
+        policy=policy,
+        full_text=full_text,
+    )
+
+
 def paper_from_latex(
     text: str,
     source_id: str = "paper.tex",
@@ -163,8 +297,43 @@ def paper_from_latex(
     full_text=None,
 ) -> Paper:
     """Build a Paper, filling only the slices in ``needs``."""
-    src = Source(source_id, "latex", path=path or source_id)
-    doc = normalize(text, regions=regions, files=files)
+    return _build(
+        text,
+        LATEX,
+        source_id=source_id,
+        path=path,
+        needs=needs,
+        bib_text=bib_text,
+        bib_id=bib_id,
+        bib_kind=bib_kind,
+        resolver=resolver,
+        progress=progress,
+        policy=policy,
+        regions=regions,
+        files=files,
+        full_text=full_text,
+    )
+
+
+def _build(
+    text: str,
+    dialect: Dialect,
+    source_id: str = "paper.tex",
+    path: str | None = None,
+    needs: set[str] | None = None,
+    bib_text: str | None = None,
+    bib_id: str = "refs.bib",
+    bib_kind: str = "bib",
+    resolver: Resolver | None = None,
+    progress=None,
+    policy: ResolvePolicy | None = None,
+    regions: tuple = (),
+    files: dict | None = None,
+    full_text=None,
+) -> Paper:
+    """Build a Paper, filling only the slices in ``needs``."""
+    src = Source(source_id, dialect.kind, path=path or source_id)
+    doc = dialect.normalize(text, regions, files)
     paper = Paper(source_id=source_id)
     paper.sections = list(doc.sections)
 
@@ -182,7 +351,7 @@ def paper_from_latex(
     # paper.numbers is matched against column headings, so the tables have to
     # be read first even when only the numbers were asked for.
     if {"paper.tables", "paper.numbers"} & wanted:
-        paper.tables = extract_tables(text, src, doc)
+        paper.tables = dialect.tables(text, src, doc)
         for table in paper.tables:
             if table.irregular:
                 paper.unchecked.append(
@@ -212,37 +381,22 @@ def paper_from_latex(
     # Claims are built out of citations, so the citation pass has to run even
     # when only the claims were asked for.
     if {"paper.citations", "paper.claims"} & wanted:
-        paper.citations = extract_citations(text, src, doc)
+        paper.citations = dialect.citations(text, src, doc)
 
     if "paper.claims" in wanted:
         paper.claims = extract_claims(doc, src, paper.citations, doc.sections)
 
     needs_bib = {"paper.bib", "paper.resolutions", "paper.cited_texts"} & wanted
     if needs_bib:
-        # A submission that inlines its compiled bibliography carries no
-        # separate file at all -- the thebibliography environment sits in the
-        # source. Very common on arXiv, where inlining lets the paper compile
-        # without running BibTeX.
-        if bib_text is None and looks_like_bbl(text):
-            bib_text, bib_id, bib_kind = text, source_id, "bbl"
-
-        if bib_text is None:
+        parsed = dialect.bibliography(
+            text, src, doc, bib_text, bib_id, bib_kind, source_id
+        )
+        if parsed is None:
             if "paper.citations" in wanted and paper.citations:
                 paper.unchecked.append(
                     "bibliography not checked: no .bib file supplied"
                 )
         else:
-            bib_src = Source(bib_id, "bib", path=bib_id)
-            compiled = bib_kind == "bbl" or looks_like_bbl(bib_text)
-            if compiled:
-                # Only when the bibliography is the document itself do its
-                # offsets need region resolution. A separate .bib or .bbl file
-                # is never spliced, so its offsets are already local to it --
-                # passing doc there would resolve them against the wrong text.
-                inlined = doc if bib_text is text else None
-                parsed = parse_bbl(bib_text, bib_src, inlined)
-            else:
-                parsed = parse_bibtex(bib_text, bib_src)
             paper.bib = parsed.entries
             for bad in parsed.malformed:
                 paper.unchecked.append(f"bibliography entry skipped: {bad}")
@@ -292,6 +446,17 @@ def paper_from_path(
     stray .bib in the download folder has nothing to do with the paper.
     """
     source = acquire(path, bib=bib)
+
+    jats = paper_from_source_if_jats(
+        source,
+        needs=needs,
+        resolver=resolver,
+        progress=progress,
+        policy=policy,
+        full_text=full_text,
+    )
+    if jats is not None:
+        return jats
 
     bib_text, bib_id = resolve_bibliography(source, path, bib)
 

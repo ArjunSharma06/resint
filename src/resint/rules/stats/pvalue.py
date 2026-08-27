@@ -95,7 +95,7 @@ def evaluate(test: StatTest) -> PResult:
     if computed is None:
         return PResult("unsupported", reason=f"cannot recompute p for {test.kind}")
 
-    reported = Decimal(test.p_raw.strip())
+    reported = test.p_exact
     bound = float(reported)
 
     if test.p_comparator == "<":

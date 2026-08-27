@@ -222,3 +222,50 @@ def test_orphans_works_on_a_compiled_bibliography(tmp_path):
     uncited = [f for f in findings if "never cited" in f.message]
     assert len(uncited) == 1
     assert "hochreiter2001" in uncited[0].message
+
+
+def test_an_uncited_bibitem_is_told_it_will_appear(tmp_path):
+    """A thebibliography environment is a list: LaTeX typesets every \bibitem
+    in it, cited or not. So an uncited entry *does* appear, in a reference list
+    nothing points at.
+
+    The rule used to tell every paper the opposite -- that the entry would be
+    dropped -- which is only true of BibTeX. On 143 findings across 204 real
+    papers it was stating the reverse of what happens, and a finding that
+    misdescribes its own evidence is worse than no finding at all.
+    """
+    path = make_tar(tmp_path, {"ms.tex": INLINE_TEX})
+    paper = paper_from_path(path, needs={"paper.bib", "paper.citations"})
+    uncited = [
+        f
+        for f in REG.get("bib/orphans").run(Context(paper=paper))
+        if "never cited" in f.message
+    ]
+    assert len(uncited) == 1
+    assert "will appear in the reference list" in uncited[0].message
+    assert "will not appear" not in uncited[0].message
+
+
+def test_an_uncited_bib_entry_is_told_it_will_be_dropped(tmp_path):
+    """The opposite case: BibTeX emits only what was cited."""
+    path = make_tar(tmp_path, {
+        "ms.tex": (
+            r"\documentclass{article}" "\n"
+            r"\begin{document}" "\n"
+            r"Cited \cite{used2020}." "\n"
+            r"\end{document}" "\n"
+        ),
+        "refs.bib": (
+            "@article{used2020, title={Used}, year={2020}}\n"
+            "@article{spare2019, title={Spare}, year={2019}}\n"
+        ),
+    })
+    paper = paper_from_path(path, needs={"paper.bib", "paper.citations"})
+    uncited = [
+        f
+        for f in REG.get("bib/orphans").run(Context(paper=paper))
+        if "never cited" in f.message
+    ]
+    assert len(uncited) == 1
+    assert "will not appear in the reference list" in uncited[0].message
+    assert "spare2019" in uncited[0].message

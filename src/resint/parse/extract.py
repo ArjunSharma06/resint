@@ -34,16 +34,16 @@ _STAT = re.compile(
     r"(?:\(\s*(?P<df1>\d+(?:\.\d+)?)\s*"
     r"(?:,\s*(?:[Nn]\s*=\s*\d+|(?P<df2>\d+(?:\.\d+)?))\s*)?\)\s*)?"
     r"(?P<scomp>[=<>~])\s*"
-    r"(?P<stat>-?\d*\.\d+|-?\d+)"
+    r"(?P<stat>-?\d*[.,]\d+|-?\d+)"
     + _GAP +
     r"(?<![A-Za-z])p\s*"
     r"(?P<pcomp><=|>=|[=<>])\s*"
-    r"(?P<p>\d*\.\d+|\d+(?:\.\d+)?)",
+    r"(?P<p>\d*[.,]\d+|\d+(?:[.,]\d+)?)",
     re.IGNORECASE | re.DOTALL,
 )
 
 _MEAN = re.compile(
-    r"(?<![A-Za-z])(?:M|Mean|mean)\s*(?:=|of|was|:)\s*(?P<mean>\d+\.\d+|\d+)",
+    r"(?<![A-Za-z])(?:M|Mean|mean)\s*(?:=|of|was|:)\s*(?P<mean>\d+[.,]\d+|\d+)",
 )
 _N = re.compile(r"(?<![A-Za-z])[Nn]\s*=\s*(?P<n>\d+)")
 _ITEMS = re.compile(r"(?P<items>\d+)[\s-]*(?:items|item)(?![A-Za-z])", re.IGNORECASE)

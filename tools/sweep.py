@@ -25,7 +25,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from resint.sweep import PaperRecord, check_one, write_record  # noqa: E402
 
-PAPER_GLOBS = ("*.tex", "*.tar.gz", "*.tgz", "*.zip")
+# .nxml and .xml are how PubMed Central serves articles. The format is
+# decided by content downstream, not by this list -- these globs only say
+# which files are worth opening at all.
+PAPER_GLOBS = ("*.tex", "*.tar.gz", "*.tgz", "*.zip", "*.nxml", "*.xml")
 
 
 def find_papers(root: Path) -> list[Path]:
@@ -42,12 +45,31 @@ def find_papers(root: Path) -> list[Path]:
     return sorted(p for p in found if "repo" not in p.parts)
 
 
-def _identify(paper: Path, root: Path) -> str:
+def _identify(paper: Path, roots) -> str:
     """A stable, unique id. Corpus fixtures are all called paper.tex."""
-    try:
-        return paper.relative_to(root).as_posix()
-    except ValueError:
-        return paper.name
+    for root in roots if isinstance(roots, list) else [roots]:
+        try:
+            return paper.relative_to(root).as_posix()
+        except ValueError:
+            continue
+    return paper.name
+
+
+def _repo_for(paper: Path, repos: Path | None) -> str | None:
+    """The clone belonging to this paper, if one was fetched.
+
+    Paired by the paper's own id -- 2608.12072v1.tar.gz against a directory
+    named 2608.12072v1 -- because that is the link the paper itself provided.
+    """
+    if repos is None:
+        return None
+    stem = paper.name
+    for suffix in (".tar.gz", ".tgz", ".zip", ".nxml", ".xml", ".tex"):
+        if stem.endswith(suffix):
+            stem = stem[: -len(suffix)]
+            break
+    candidate = repos / stem
+    return str(candidate) if candidate.is_dir() else None
 
 
 def git_commit() -> str:
@@ -132,14 +154,76 @@ def _summarise(records: list[PaperRecord]) -> None:
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("root", help="directory of papers, or a single paper")
+    parser.add_argument(
+        "root", nargs="+", help="directories of papers, or single papers"
+    )
     parser.add_argument("--out", default="sweep.jsonl")
     parser.add_argument("--workers", type=int, default=0, help="0 = cpu_count-1")
     parser.add_argument("--timeout", type=float, default=120.0, help="seconds per paper")
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument(
+        "--repos",
+        default=None,
+        help="directory of clones named after the paper that linked them",
+    )
+    parser.add_argument(
+        "--resolve",
+        action="store_true",
+        help="look references up against Crossref and OpenAlex (opens the network)",
+    )
+    parser.add_argument(
+        "--mailto",
+        default=None,
+        help="contact address for Crossref's polite pool; only sent with --resolve",
+    )
+    parser.add_argument(
+        "--batch",
+        default=None,
+        help="run one slice, as N/M -- e.g. 2/5 for the second of five",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="enable the model rules, e.g. groq/openai/gpt-oss-120b",
+    )
+    parser.add_argument(
+        "--model-workers",
+        type=int,
+        default=3,
+        help=(
+            "workers to use when --model is set. Deliberately low: every "
+            "worker holds its own provider and its own pacing, so fifteen of "
+            "them multiply the request rate by fifteen and every one gets "
+            "rate limited."
+        ),
+    )
     args = parser.parse_args(argv)
 
-    papers = find_papers(Path(args.root))
+    roots = [Path(r) for r in args.root]
+    groups = [find_papers(r) for r in roots]
+
+    # Interleave rather than concatenate. A batch of 75 taken off the front of
+    # a concatenated list would be 75 arXiv papers, and a run that only ever
+    # sees one format proves nothing about the other.
+    papers: list[Path] = []
+    for index in range(max((len(g) for g in groups), default=0)):
+        for group in groups:
+            if index < len(group):
+                papers.append(group[index])
+
+    if args.batch:
+        try:
+            number, _, total = args.batch.partition("/")
+            number, total = int(number), int(total)
+        except ValueError:
+            print("sweep: --batch wants N/M, e.g. 2/5", file=sys.stderr)
+            return 2
+        if not 1 <= number <= total:
+            print(f"sweep: batch {number} is not within 1..{total}", file=sys.stderr)
+            return 2
+        size = -(-len(papers) // total)  # ceiling, so the last batch is short
+        papers = papers[(number - 1) * size : number * size]
+
     if args.limit:
         papers = papers[: args.limit]
     if not papers:
@@ -148,12 +232,38 @@ def main(argv=None) -> int:
 
     import os
 
+    spec = None
+    if args.model:
+        provider, _, name = args.model.partition("/")
+        if not name:
+            print("sweep: --model wants provider/name, e.g. groq/llama3", file=sys.stderr)
+            return 2
+        spec = {"provider": provider, "name": name}
+
     workers = args.workers or max(1, (os.cpu_count() or 2) - 1)
+    if spec and not args.workers:
+        # Parsing is CPU-bound and wants every core; calling a hosted model is
+        # rate-limited and wants very few. When both run, the limit governs.
+        workers = args.model_workers
     commit = git_commit()
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"  {len(papers)} papers · {workers} workers · {commit or 'no commit'}")
+    lookup = {"mailto": args.mailto} if args.resolve else None
+    if args.mailto and not args.resolve:
+        print("sweep: --mailto does nothing without --resolve", file=sys.stderr)
+
+    repos = Path(args.repos) if args.repos else None
+    paired = sum(1 for p in papers if _repo_for(p, repos)) if repos else 0
+
+    label = f" · {args.model}" if spec else ""
+    if repos:
+        label += f" · {paired} with repos"
+    if args.batch:
+        label += f" · batch {args.batch}"
+    if lookup:
+        label += " · resolving"
+    print(f"  {len(papers)} papers · {workers} workers · {commit or 'no commit'}{label}")
     started = time.perf_counter()
     records: list[PaperRecord] = []
 
@@ -164,7 +274,13 @@ def main(argv=None) -> int:
         ) as pool:
             pending = {
                 pool.submit(
-                    check_one, str(p), paper_id=_identify(p, Path(args.root)), commit=commit
+                    check_one,
+                    str(p),
+                    paper_id=_identify(p, roots),
+                    commit=commit,
+                    model=spec,
+                    repo_path=_repo_for(p, repos),
+                    resolve=lookup,
                 ): p
                 for p in papers
             }

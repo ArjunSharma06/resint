@@ -34,7 +34,10 @@ _NAMED = 8
     cannot_detect=(
         "Entries kept deliberately for a camera-ready version or a companion "
         "paper, and keys supplied by a bibliography style rather than the .bib "
-        "file. Neither is distinguishable from an oversight by inspection."
+        "file. Neither is distinguishable from an oversight by inspection. It "
+        "also cannot see citations produced by a macro the paper defines "
+        "itself: a definition is skipped as a template, so a key only ever "
+        "passed through that macro reads as uncited."
     ),
 )
 def check(ctx: Context) -> Iterator:
@@ -78,12 +81,52 @@ def check(ctx: Context) -> Iterator:
     more = "" if len(unused) <= _NAMED else f", and {len(unused) - _NAMED} more"
     count = "1 entry is" if len(unused) == 1 else f"{len(unused)} entries are"
 
+    # What happens to an uncited entry depends entirely on how the
+    # bibliography is built, and the two outcomes are opposites.
+    #
+    # BibTeX reads a .bib and emits only what was cited, so an uncited entry
+    # silently vanishes -- harmless, and routine with a shared .bib.
+    #
+    # A thebibliography environment is a list: LaTeX typesets every \bibitem
+    # in it, cited or not. So an uncited entry *does* appear, in a reference
+    # list where nothing points to it.
+    #
+    # This rule told every paper the first story. On 143 findings across 204
+    # real papers it was telling the second kind of paper the exact opposite
+    # of what would happen -- and a finding that misdescribes the evidence is
+    # worse than no finding, because the reader cannot tell which to trust.
+    # A JATS <ref> behaves like a \bibitem, not like a .bib entry: the
+    # reference list is the article's own furniture and every entry in it is
+    # typeset. Reading only "bibitem" here told six real PubMed Central
+    # articles that BibTeX would drop the entry, in documents where no BibTeX
+    # exists -- the same class of false statement this branch was added to fix,
+    # reintroduced by a format the branch predated.
+    typeset_regardless = all(e.entry_type in ("bibitem", "ref") for e in ctx.paper.bib)
+
+    if typeset_regardless:
+        listing = (
+            "a reference list"
+            if any(e.entry_type == "ref" for e in ctx.paper.bib)
+            else "a thebibliography environment"
+        )
+        consequence = (
+            f"and {listing} typesets every entry, so they will appear in the "
+            "reference list with nothing pointing at them"
+        )
+        remedy = "Cite them where relevant, or remove the entries."
+    else:
+        consequence = (
+            "so BibTeX will drop them and they will not appear in the "
+            "reference list"
+        )
+        remedy = "Cite them where relevant, or drop them from the bibliography."
+
     yield ctx.finding(
         message=(
-            f"{count} defined in {bib_label} but never cited, so they will not "
-            f"appear in the reference list: {shown}{more}."
+            f"{count} defined in {bib_label} but never cited, {consequence}: "
+            f"{shown}{more}."
         ),
         anchors=[entries[k].span for k in unused[:3]],
         absent_from="the paper",
-        fix="Cite them where relevant, or drop them from the bibliography.",
+        fix=remedy,
     )

@@ -40,6 +40,15 @@ def title_overlap(left: str, right: str) -> float:
     return len(a & b) / min(len(a), len(b))
 
 
+_YEAR_DIGITS = re.compile(r"\d{4}")
+
+
+def _year_digits(value: str) -> str:
+    """The four-digit year, ignoring a disambiguation suffix."""
+    found = _YEAR_DIGITS.search(value or "")
+    return found.group(0) if found else ""
+
+
 @rule(
     id="bib/metadata-drift",
     severity="med",
@@ -77,7 +86,15 @@ def check(ctx: Context) -> Iterator:
             guessed.append(entry.key)
             continue
 
-        if entry.year and record.year and entry.year != record.year:
+        # "2015a" and "2015b" are BibTeX's disambiguation suffixes for two
+        # works by the same author in one year -- a convention, not a claim
+        # about the date, and the index has no equivalent. Comparing the
+        # strings reported every disambiguated entry as drifted, which on a
+        # bibliography using the convention is most of it.
+        stated = _year_digits(entry.year)
+        canonical = _year_digits(record.year)
+
+        if stated and canonical and stated != canonical:
             yield ctx.finding(
                 message=(
                     f"[{entry.key}] gives year {entry.year}; {record.source} has "

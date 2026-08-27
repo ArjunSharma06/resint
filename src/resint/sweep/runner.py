@@ -24,7 +24,11 @@ from pathlib import Path
 from .. import __version__
 from ..engine import plan, run
 from ..parse.acquire import UnreadableInput, acquire
-from ..parse.document import paper_from_latex, resolve_bibliography
+from ..parse.document import (
+    paper_from_latex,
+    paper_from_source_if_jats,
+    resolve_bibliography,
+)
 from ..resolve.base import NullResolver
 from ..rules import load_all
 from .record import PaperRecord, audit_anchors, fingerprint
@@ -124,6 +128,50 @@ def _census(paper, wanted: set[str]) -> dict:
     return census
 
 
+def build_provider(spec):
+    """Construct a model provider inside the worker that will use it.
+
+    A spec -- {"provider": "groq", "name": "..."} -- rather than a built
+    provider, because ProcessPoolExecutor pickles its arguments and both
+    CachingProvider and DiskStore hold locks. Building per worker is also the
+    right shape: each gets its own HTTP client and its own adaptive pacing,
+    while the sqlite cache underneath is shared and in WAL mode, so an answer
+    one worker pays for is free for the rest.
+    """
+    if not spec:
+        return None
+
+    from ..model.base import CachingProvider
+    from ..model.openai_compat import OpenAICompatProvider
+    from ..model.store import DiskStore
+
+    inner = OpenAICompatProvider(
+        model=spec.get("name", ""),
+        provider=spec.get("provider", ""),
+        base_url=spec.get("base_url", ""),
+    )
+    if not inner.configured:
+        return None
+    return CachingProvider(inner=inner, store=DiskStore(spec.get("cache_db")))
+
+
+def build_resolver(spec):
+    """Construct a reference resolver inside the worker that will use it.
+
+    Same reasoning as build_provider: CachingResolver holds a lock and cannot
+    be pickled across a process boundary. Each worker gets its own, which also
+    means each paces itself -- so the worker count is what bounds the request
+    rate against Crossref, not a shared budget nobody enforces.
+    """
+    if not spec:
+        return NullResolver()
+
+    from ..resolve import CachingResolver
+    from ..resolve.http import HttpResolver
+
+    return CachingResolver(HttpResolver(mailto=spec.get("mailto") or None))
+
+
 def check_one(
     path: str | Path,
     *,
@@ -131,6 +179,9 @@ def check_one(
     config=None,
     resolver=None,
     commit: str = "",
+    model=None,
+    repo_path=None,
+    resolve=None,
 ) -> dict:
     """Run one paper end to end. Never raises."""
     path = Path(path)
@@ -148,7 +199,14 @@ def check_one(
 
     try:
         registry = load_all()
-        chosen = plan(registry, config, has_repo=False, has_provider=False)
+        provider = build_provider(model)
+        active_resolver = resolver or build_resolver(resolve)
+        chosen = plan(
+            registry,
+            config,
+            has_repo=repo_path is not None,
+            has_provider=provider is not None,
+        )
         record.needs = sorted(chosen.paper_slices)
 
         acquired_at = time.perf_counter()
@@ -178,22 +236,44 @@ def check_one(
         }
 
         parsed_at = time.perf_counter()
-        paper = paper_from_latex(
-            source.text,
-            source_id=source.name,
-            path=source.path,
+        # Same branch the CLI takes. Calling paper_from_latex directly here is
+        # how six real PubMed Central articles came to be parsed as LaTeX.
+        paper = paper_from_source_if_jats(
+            source,
             needs=chosen.paper_slices,
-            bib_text=bib_text,
-            bib_id=bib_id,
-            bib_kind=source.bib_kind,
-            resolver=resolver or NullResolver(),
-            regions=source.regions,
-            files=source.files,
+            resolver=active_resolver,
         )
+        if paper is None:
+            paper = paper_from_latex(
+                source.text,
+                source_id=source.name,
+                path=source.path,
+                needs=chosen.paper_slices,
+                bib_text=bib_text,
+                bib_id=bib_id,
+                bib_kind=source.bib_kind,
+                resolver=active_resolver,
+                regions=source.regions,
+                files=source.files,
+            )
         record.slice_census = _census(paper, chosen.paper_slices)
 
+        # The five repro rules and claim/unimplemented have never run on a
+        # real repository. Reading one is the only thing that changes that.
+        repo = None
+        if repo_path is not None:
+            from ..parse.repo import read_repo
+
+            try:
+                repo = read_repo(repo_path, needs=chosen.repo_slices)
+            except Exception as exc:  # noqa: BLE001
+                record.notes.append(f"repository not read: {type(exc).__name__}: {exc}")
+
         ruled_at = time.perf_counter()
-        report = run(paper, registry=registry, config=config, prepared=chosen)
+        report = run(
+            paper, repo=repo, registry=registry, config=config, prepared=chosen,
+            model=provider,
+        )
 
         record.findings = [f.to_dict() for f in report.findings]
         record.unchecked = list(report.unchecked)
