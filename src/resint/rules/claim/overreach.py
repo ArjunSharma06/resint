@@ -28,7 +28,7 @@ from __future__ import annotations
 from decimal import Decimal, InvalidOperation
 from typing import Iterator
 
-from ...model.verify import anchor_in
+from ...model.verify import anchor_in, unanswered
 from ..registry import Context, rule
 
 #: Below this relative gain, a superlative is doing more work than the result.
@@ -178,7 +178,7 @@ def _render(tables) -> str:
     id="claim/overreach",
     severity="med",
     tier="model-assisted",
-    requires=["paper.text", "paper.tables"],
+    requires=["paper.text", "paper.sections", "paper.tables"],
     cannot_detect=(
         "Claims whose evidence is not in a table this parser could read: "
         "results stated only in prose, in a figure, or in a table too "
@@ -191,32 +191,18 @@ def _render(tables) -> str:
     ),
 )
 def check(ctx: Context) -> Iterator:
-    from ...model.base import Request
-
     tables = [t for t in ctx.paper.tables if not t.irregular]
     if not tables or not ctx.paper.text:
         return
 
-    answer = ctx.ask(
-        Request(
-            system=SYSTEM,
-            user=(
-                "PAPER:\n"
-                + ctx.paper.text.window(12_000)
-                + "\n\nTABLES:\n"
-                + _render(tables)
-            ),
-            schema={"required": ["comparisons"]},
-            prompt_version=PROMPT_VERSION,
-        )
-    )
-    if not answer.usable:
-        ctx.abstain("the model did not answer; no claims were compared")
+    survey = ctx.survey()
+    if not survey.usable:
+        ctx.abstain(unanswered(survey.answer, "no claims were compared"))
         return
 
     unverified = 0
 
-    for item in answer.payload.get("comparisons") or ():
+    for item in survey.records("comparisons"):
         if not isinstance(item, dict):
             continue
 

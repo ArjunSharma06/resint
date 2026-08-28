@@ -26,7 +26,7 @@ from __future__ import annotations
 import re
 from typing import Iterator
 
-from ...model.verify import anchor_in
+from ...model.verify import anchor_in, unanswered
 from ..registry import Context, rule
 
 #: A capability needs this many distinct search terms before absence means
@@ -90,7 +90,14 @@ def _haystack(repo) -> str:
     id="claim/unimplemented",
     severity="low",
     tier="model-assisted",
-    requires=["paper.text", "repo.files", "repo.symbols", "repo.readme", "repo.configs"],
+    requires=[
+        "paper.text",
+        "paper.sections",
+        "repo.files",
+        "repo.symbols",
+        "repo.readme",
+        "repo.configs",
+    ],
     cannot_detect=(
         "Anything implemented under vocabulary the paper does not use, which "
         "is the normal case for research code: a capability called "
@@ -103,8 +110,6 @@ def _haystack(repo) -> str:
     ),
 )
 def check(ctx: Context) -> Iterator:
-    from ...model.base import Request
-
     if not ctx.paper.text:
         return
 
@@ -113,22 +118,15 @@ def check(ctx: Context) -> Iterator:
         ctx.abstain("the repository had no readable names to search")
         return
 
-    answer = ctx.ask(
-        Request(
-            system=SYSTEM,
-            user="PAPER:\n" + ctx.paper.text.window(14_000),
-            schema={"required": ["capabilities"]},
-            prompt_version=PROMPT_VERSION,
-        )
-    )
-    if not answer.usable:
-        ctx.abstain("the model did not answer; claimed capabilities were not checked")
+    survey = ctx.survey()
+    if not survey.usable:
+        ctx.abstain(unanswered(survey.answer, "claimed capabilities were not checked"))
         return
 
     unverified = 0
     searched = 0
 
-    for item in answer.payload.get("capabilities") or ():
+    for item in survey.records("capabilities"):
         if not isinstance(item, dict):
             continue
 

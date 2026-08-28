@@ -143,20 +143,47 @@ def test_unresolved_is_silent_when_no_resolution_was_attempted():
 @pytest.mark.parametrize(
     "etype, expected",
     [
-        ("article", "high"),
-        ("inproceedings", "high"),
+        # A title that fails to match is weak evidence whatever the entry type,
+        # so no title-only miss reaches "high". Titles are abbreviated in
+        # bibliographies, venues go unindexed, and books and standards are
+        # frequently absent -- across 68 real papers this branch produced 151
+        # high-severity findings from 176 title-only misses, each reading as
+        # "this reference may not exist" on the strength of a string compare.
+        ("article", "med"),
+        ("inproceedings", "med"),
+        # Types that legitimately sit outside the indices are weaker still.
         ("phdthesis", "low"),
         ("techreport", "low"),
         ("misc", "low"),
     ],
 )
-def test_severity_reflects_how_indexable_the_type_is(etype, expected):
+def test_a_title_only_miss_is_never_high_severity(etype, expected):
     e = entry("k", title="Some Work", entry_type=etype)
     findings = fire(
         "bib/unresolved",
         paper_with([e], {"k": Resolution(Status.NOT_FOUND, queried=("crossref",))}),
     )
     assert findings[0].severity.value == expected
+
+
+def test_only_a_dead_doi_reaches_high_severity():
+    """The rule's docstring always promised this; the code did not do it.
+
+    A DOI is a claim about one registered record, so its failure to resolve
+    means something specific. A title is a string that might be spelled
+    differently, and treating the two as equal evidence is what turns this
+    rule into an accusation machine.
+    """
+    resolution = {"k": Resolution(Status.NOT_FOUND, queried=("crossref",))}
+
+    with_doi = fire(
+        "bib/unresolved",
+        paper_with([entry("k", title="Work", doi="10.5555/nope")], resolution),
+    )
+    without = fire("bib/unresolved", paper_with([entry("k", title="Work")], resolution))
+
+    assert with_doi[0].severity.value == "high"
+    assert without[0].severity.value == "med"
 
 
 def test_a_failed_doi_outweighs_an_unindexable_type():

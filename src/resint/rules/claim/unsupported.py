@@ -26,7 +26,7 @@ from __future__ import annotations
 import re
 from typing import Iterator
 
-from ...model.verify import anchor_in
+from ...model.verify import anchor_in, unanswered
 from ..registry import Context, rule
 
 #: A claim needs this many distinct terms before its absence means anything.
@@ -142,8 +142,6 @@ def _body_after_abstract(text, sections) -> tuple[str, int]:
     ),
 )
 def check(ctx: Context) -> Iterator:
-    from ...model.base import Request
-
     if not ctx.paper.text:
         return
 
@@ -155,22 +153,15 @@ def check(ctx: Context) -> Iterator:
         )
         return
 
-    answer = ctx.ask(
-        Request(
-            system=SYSTEM,
-            user="PAPER:\n" + ctx.paper.text.window(14_000),
-            schema={"required": ["claims"]},
-            prompt_version=PROMPT_VERSION,
-        )
-    )
-    if not answer.usable:
-        ctx.abstain("the model did not answer; abstract claims were not checked")
+    survey = ctx.survey()
+    if not survey.usable:
+        ctx.abstain(unanswered(survey.answer, "abstract claims were not checked"))
         return
 
     haystack = body.lower()
     unverified = 0
 
-    for item in answer.payload.get("claims") or ():
+    for item in survey.records("abstract_claims"):
         if not isinstance(item, dict):
             continue
 

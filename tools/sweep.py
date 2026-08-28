@@ -162,6 +162,11 @@ def main(argv=None) -> int:
     parser.add_argument("--timeout", type=float, default=120.0, help="seconds per paper")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="overwrite an existing --out file that already holds records",
+    )
+    parser.add_argument(
         "--repos",
         default=None,
         help="directory of clones named after the paper that linked them",
@@ -240,6 +245,7 @@ def main(argv=None) -> int:
             return 2
         spec = {"provider": provider, "name": name}
 
+
     workers = args.workers or max(1, (os.cpu_count() or 2) - 1)
     if spec and not args.workers:
         # Parsing is CPU-bound and wants every core; calling a hosted model is
@@ -247,6 +253,23 @@ def main(argv=None) -> int:
         workers = args.model_workers
     commit = git_commit()
     out_path = Path(args.out)
+
+    # A sweep is expensive and interruptible, so its output is the record of
+    # work already paid for. Opening it "w" truncated that on any retry:
+    # batch 1 stopped at 68 of 71, and re-running it would have destroyed all
+    # 68 before the first paper of the retry finished.
+    if out_path.exists() and out_path.stat().st_size > 0 and not args.force:
+        done = sum(1 for line in out_path.open(encoding="utf-8") if line.strip())
+        print(
+            f"sweep: {out_path} already holds {done} record(s).",
+            file=sys.stderr,
+        )
+        print(
+            "  Writing here would discard them. Use a different --out, or "
+            "--force to overwrite.",
+            file=sys.stderr,
+        )
+        return 2
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     lookup = {"mailto": args.mailto} if args.resolve else None

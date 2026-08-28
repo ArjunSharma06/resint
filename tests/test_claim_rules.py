@@ -414,7 +414,7 @@ def unsupported_paper(mentions_body=False):
 
 
 UNSUPPORTED_ANSWER = {
-    "claims": [
+    "abstract_claims": [
         {
             "claim": "We show that the method achieves improved calibration under distribution shift.",
             "about": "improved calibration",
@@ -457,7 +457,7 @@ def test_generic_terms_are_not_searched_on():
 def test_a_claim_found_in_the_body_rather_than_the_abstract_is_not_checked():
     """Otherwise the rule searches the body for a sentence that is in it."""
     answer = {
-        "claims": [
+        "abstract_claims": [
             {
                 "claim": "Section text number 0 describing the experimental protocol at length,",
                 "about": "protocol",
@@ -510,7 +510,7 @@ def test_a_hallucinated_quote_becomes_nothing(rule, paper, _answer, needs):
         "scope_claims": [invented],
         "evaluated_on": ["CIFAR-10", "CIFAR-100"],
         "capabilities": [{"claim": invented, "capability": "x", "terms": ["aa", "bb"]}],
-        "claims": [{"claim": invented, "about": "x", "terms": ["aaaaa", "bbbbb"]}],
+        "abstract_claims": [{"claim": invented, "about": "x", "terms": ["aaaaa", "bbbbb"]}],
     }
     findings, ctx = fire(rule, paper(), payload, repo=repo(files=["a.py"]) if needs else None)
     assert findings == []
@@ -520,7 +520,7 @@ def test_a_hallucinated_quote_becomes_nothing(rule, paper, _answer, needs):
 def test_a_malformed_reply_becomes_nothing(rule, paper, _answer, needs):
     """A model that has drifted off-task returns the wrong shape, and the
     wrong shape has to be survivable rather than an exception."""
-    for payload in ({"comparisons": "not a list"}, {"claims": [None, 42, "text"]}, {}):
+    for payload in ({"comparisons": "not a list"}, {"abstract_claims": [None, 42, "text"]}, {}):
         findings, _ = fire(
             rule, paper(), payload, repo=repo(files=["a.py"]) if needs else None
         )
@@ -537,7 +537,7 @@ def test_an_injected_instruction_becomes_nothing(rule, paper, _answer, needs):
         "scope_claims": [injected],
         "evaluated_on": ["CIFAR-10", "CIFAR-100"],
         "capabilities": [{"claim": injected, "capability": "x", "terms": ["aa", "bb"]}],
-        "claims": [{"claim": injected, "about": "x", "terms": ["aaaaa", "bbbbb"]}],
+        "abstract_claims": [{"claim": injected, "about": "x", "terms": ["aaaaa", "bbbbb"]}],
     }
     findings, _ = fire(rule, paper(), payload, repo=repo(files=["a.py"]) if needs else None)
     assert findings == []

@@ -25,7 +25,7 @@ from __future__ import annotations
 
 from typing import Iterator
 
-from ...model.verify import anchor_in
+from ...model.verify import anchor_in, unanswered
 from ..registry import Context, rule
 
 #: Below this many distinct evaluation settings, a breadth claim is doing more
@@ -132,7 +132,7 @@ def _verified_names(text, names) -> list[str]:
     id="claim/scope-creep",
     severity="med",
     tier="model-assisted",
-    requires=["paper.text"],
+    requires=["paper.text", "paper.sections"],
     cannot_detect=(
         "Breadth claimed in language outside the vocabulary this rule "
         "recognises, and breadth that is genuinely justified -- a paper "
@@ -144,24 +144,15 @@ def _verified_names(text, names) -> list[str]:
     ),
 )
 def check(ctx: Context) -> Iterator:
-    from ...model.base import Request
-
     if not ctx.paper.text:
         return
 
-    answer = ctx.ask(
-        Request(
-            system=SYSTEM,
-            user="PAPER:\n" + ctx.paper.text.window(14_000),
-            schema={"required": ["scope_claims", "evaluated_on"]},
-            prompt_version=PROMPT_VERSION,
-        )
-    )
-    if not answer.usable:
-        ctx.abstain("the model did not answer; scope claims were not checked")
+    survey = ctx.survey()
+    if not survey.usable:
+        ctx.abstain(unanswered(survey.answer, "scope claims were not checked"))
         return
 
-    evaluated = _verified_names(ctx.paper.text, answer.payload.get("evaluated_on"))
+    evaluated = _verified_names(ctx.paper.text, survey.strings("evaluated_on"))
     if len(evaluated) >= NARROW_EVALUATION:
         return
 
@@ -177,7 +168,7 @@ def check(ctx: Context) -> Iterator:
 
     unverified = 0
 
-    for claim in answer.payload.get("scope_claims") or ():
+    for claim in survey.strings("scope_claims"):
         if not isinstance(claim, str):
             continue
 

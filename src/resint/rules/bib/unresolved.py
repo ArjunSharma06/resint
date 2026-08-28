@@ -73,8 +73,22 @@ def check(ctx: Context) -> Iterator:
             )
             severity = "low"
         else:
-            detail = "No index returned a matching record."
-            severity = "high"
+            # A title that fails to match is much weaker evidence than a DOI
+            # that fails to resolve, and this branch used to rate the two the
+            # same. Across 68 real papers that produced 151 high-severity
+            # findings from 176 title-only misses -- each one reading as "this
+            # reference may not exist" on the strength of a string comparison.
+            #
+            # Titles fail to match for ordinary reasons: abbreviated in the
+            # bibliography, non-English venue, a book or a standard or a
+            # chapter, or simply a gap in Crossref and OpenAlex coverage. The
+            # docstring above promised this guard; the code never had it.
+            detail = (
+                "No index returned a matching record, though a title search "
+                "misses legitimately when the title is abbreviated or the "
+                "venue is not well indexed."
+            )
+            severity = "med"
 
         yield ctx.finding(
             severity=severity,

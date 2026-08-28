@@ -31,3 +31,10 @@ fixtures/
 *.sqlite
 *.sqlite-wal
 *.sqlite-shm
+
+# Personal Claude Code state. settings.local.json records permission grants
+# and can pick up machine-specific paths; it is per-developer, never shared.
+# Shared config (agents, project settings) is committed deliberately or not
+# at all -- see docs/contributing before adding any.
+.claude/settings.local.json
+.claude/*.local.json

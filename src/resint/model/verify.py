@@ -120,6 +120,22 @@ def locate(quote: str, text: str) -> Located:
     )
 
 
+def unanswered(answer, what: str) -> str:
+    """Why a model rule produced nothing, in the rule's own words plus the
+    provider's.
+
+    Rules used to abstain with a bare "the model did not answer", discarding
+    the reason. Across 68 real papers that message appeared 198 times and said
+    nothing about whether the tier was rate limited, refused, truncated, or
+    handed a broken prompt -- so a sweep could not tell a throttled run from a
+    broken one. The three-outcome contract exists to keep exactly those apart,
+    and the reporting layer was throwing the distinction away again.
+    """
+    detail = (getattr(answer, "detail", "") or "").strip()
+    reason = f"the model did not answer ({detail})" if detail else "the model did not answer"
+    return f"{reason}; {what}"
+
+
 def anchor_in(text, quote: str, label: str = "claim"):
     """Locate a model's quote in normalized paper text and anchor it.
 

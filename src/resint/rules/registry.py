@@ -92,6 +92,11 @@ class Context:
     # reached for a model would be mislabelling its own output, so it is not
     # given the option: ctx.model is None and ctx.ask() refuses.
     model: object = None
+    # Carried by reference through gated_for, like abstentions, so what one
+    # rule pays for is available to the rest. Five rules asking the same model
+    # to read the same paper is a cost the *user* pays, and the kind that
+    # stops people running a tool on every revision.
+    shared: dict = field(default_factory=dict)
 
     def abstain(self, reason: str) -> None:
         """Record that this rule declined to check something, and why.
@@ -105,6 +110,21 @@ class Context:
         if self.rule is None:
             raise RuleDefinitionError("ctx.abstain() is only available inside a rule")
         self.abstentions.append(f"{self.rule.id}: {reason}")
+
+    def survey(self):
+        """The model's one reading of this paper, shared by every model rule.
+
+        Memoized across the run: the first rule to ask pays for it and the
+        rest read the same answer. Five rules sending the same document five
+        times cost roughly 17,500 tokens per paper to learn five things.
+        """
+        cached = self.shared.get("survey")
+        if cached is None:
+            from ..model.survey import read_paper
+
+            cached = read_paper(self)
+            self.shared["survey"] = cached
+        return cached
 
     def ask(self, request):
         """Put a question to the user's model, if this run has one.
@@ -186,6 +206,7 @@ class Context:
             rule=rule,
             abstentions=self.abstentions,
             model=self.model if rule.tier is Tier.MODEL_ASSISTED else None,
+            shared=self.shared,
         )
 
 

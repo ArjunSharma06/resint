@@ -23,7 +23,7 @@ from __future__ import annotations
 import re
 from typing import Iterator
 
-from ...model.verify import anchor_in
+from ...model.verify import anchor_in, unanswered
 from ..registry import Context, rule
 
 #: The point at which a difference in budget stops being incidental. Two-fold
@@ -88,7 +88,7 @@ def _quantity(text: str) -> float | None:
     id="eval/baseline-fairness",
     severity="med",
     tier="model-assisted",
-    requires=["paper.text"],
+    requires=["paper.text", "paper.sections"],
     cannot_detect=(
         "Budgets the paper does not state. A baseline quoted from another "
         "paper carries that paper's setup and usually no description of it, "
@@ -100,26 +100,17 @@ def _quantity(text: str) -> float | None:
     ),
 )
 def check(ctx: Context) -> Iterator:
-    from ...model.base import Request
-
     if not ctx.paper.text:
         return
 
-    answer = ctx.ask(
-        Request(
-            system=SYSTEM,
-            user="PAPER:\n" + ctx.paper.text.window(14_000),
-            schema={"required": ["budgets"]},
-            prompt_version=PROMPT_VERSION,
-        )
-    )
-    if not answer.usable:
-        ctx.abstain("the model did not answer; training budgets were not compared")
+    survey = ctx.survey()
+    if not survey.usable:
+        ctx.abstain(unanswered(survey.answer, "training budgets were not compared"))
         return
 
     unverified = 0
 
-    for item in answer.payload.get("budgets") or ():
+    for item in survey.records("budgets"):
         if not isinstance(item, dict):
             continue
 
