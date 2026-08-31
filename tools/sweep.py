@@ -83,6 +83,53 @@ def git_commit() -> str:
         return ""
 
 
+#: Uncommitted changes here change the findings. Everything else -- notes,
+#: README, fixtures for other tests -- does not, and refusing on those would
+#: train the operator to reach for the escape hatch by reflex.
+_MATTERS = ("src/", "tools/sweep.py", "pyproject.toml")
+
+
+def dirty_paths() -> list[str]:
+    """Uncommitted code that would make this sweep's commit a lie.
+
+    A sweep costs hours and its output is then labelled by hand, one finding at
+    a time. Both are spent against a specific version of the rules, and a
+    record stamped with a commit it did not actually run is worse than one
+    stamped with nothing: it invites a later reader to diff two sweeps and
+    attribute the difference to the commits.
+
+    Untracked files count. ``parse/inline.py`` sat untracked for a day while
+    being imported at runtime, so "tracked and modified" would have missed the
+    thing most likely to be moving.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True, text=True, timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        # No git, or not a checkout. Not being able to tell is not evidence
+        # of a clean tree, but refusing to sweep at all would be worse: the
+        # commit is already recorded as empty, which says the same thing.
+        return []
+    return dirty_from_status(out.stdout)
+
+
+def dirty_from_status(text: str) -> list[str]:
+    """The paths in ``git status --porcelain`` output that change findings."""
+    paths = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        # Porcelain v1: two status columns, a space, then the path. A rename
+        # reads "R  old -> new", and it is the new path that is in the tree.
+        # A path with a space in it arrives quoted.
+        path = line[3:].strip().split(" -> ")[-1].strip('"')
+        if path.startswith(_MATTERS):
+            paths.append(path)
+    return sorted(paths)
+
+
 def _summarise(records: list[PaperRecord]) -> None:
     total = len(records)
     crashed = [r for r in records if r.crashed]
@@ -158,6 +205,11 @@ def main(argv=None) -> int:
         "root", nargs="+", help="directories of papers, or single papers"
     )
     parser.add_argument("--out", default="sweep.jsonl")
+    parser.add_argument(
+        "--allow-dirty",
+        action="store_true",
+        help="sweep with uncommitted code; records the commit as -dirty",
+    )
     parser.add_argument("--workers", type=int, default=0, help="0 = cpu_count-1")
     parser.add_argument("--timeout", type=float, default=120.0, help="seconds per paper")
     parser.add_argument("--limit", type=int, default=0)
@@ -252,6 +304,30 @@ def main(argv=None) -> int:
         # rate-limited and wants very few. When both run, the limit governs.
         workers = args.model_workers
     commit = git_commit()
+    dirty = dirty_paths()
+    if dirty and not args.allow_dirty:
+        print(
+            f"sweep: {len(dirty)} uncommitted change(s) under src/ or "
+            "tools/sweep.py.",
+            file=sys.stderr,
+        )
+        for path in dirty[:5]:
+            print(f"    {path}", file=sys.stderr)
+        if len(dirty) > 5:
+            print(f"    ... and {len(dirty) - 5} more", file=sys.stderr)
+        print(
+            "  This run would be stamped with a commit it did not execute.",
+            file=sys.stderr,
+        )
+        print(
+            "  Commit, stash, or pass --allow-dirty to record it as "
+            "unreproducible.",
+            file=sys.stderr,
+        )
+        return 2
+    if dirty:
+        # Recorded, not hidden. Every record in the file carries the mark.
+        commit = f"{commit or 'unknown'}-dirty"
     out_path = Path(args.out)
 
     # A sweep is expensive and interruptible, so its output is the record of

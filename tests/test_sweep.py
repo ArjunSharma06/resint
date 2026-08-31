@@ -246,3 +246,54 @@ def test_unknown_fields_are_ignored_so_the_schema_can_grow(tmp_path):
         json.dumps({"paper_id": "a", "invented_later": 42}) + "\n", encoding="utf-8"
     )
     assert read_records(path)[0].paper_id == "a"
+
+
+# --- the dirty-tree guard -------------------------------------------------
+#
+# A sweep costs hours and is then labelled by hand. Both are spent against a
+# specific version of the rules, so a record stamped with a commit it did not
+# execute is worse than one stamped with nothing.
+
+
+def _tool():
+    """tools/sweep.py, which is a script rather than an importable module."""
+    import importlib.util
+
+    path = Path(__file__).resolve().parents[1] / "tools" / "sweep.py"
+    spec = importlib.util.spec_from_file_location("_sweep_tool", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_changed_source_makes_a_sweep_unreproducible():
+    status = " M src/resint/rules/stats/pvalue.py\n M tools/sweep.py\n"
+    assert _tool().dirty_from_status(status) == [
+        "src/resint/rules/stats/pvalue.py",
+        "tools/sweep.py",
+    ]
+
+
+def test_untracked_source_counts():
+    # parse/inline.py sat untracked for a day while being imported at
+    # runtime, so "tracked and modified" would miss what is most likely to
+    # be moving.
+    assert _tool().dirty_from_status("?? src/resint/parse/inline.py\n") == [
+        "src/resint/parse/inline.py"
+    ]
+
+
+def test_notes_and_readme_do_not_block_a_sweep():
+    # Refusing on files that cannot change a finding would train the operator
+    # to reach for --allow-dirty by reflex, which costs the guard everything.
+    status = " M README.md\n M notes/sweep-log.md\n?? sweeps/batch-2.jsonl\n"
+    assert _tool().dirty_from_status(status) == []
+
+
+def test_a_renamed_rule_is_reported_at_its_new_path():
+    status = "R  src/resint/rules/bib/old.py -> src/resint/rules/bib/new.py\n"
+    assert _tool().dirty_from_status(status) == ["src/resint/rules/bib/new.py"]
+
+
+def test_a_clean_tree_is_empty():
+    assert _tool().dirty_from_status("") == []
