@@ -36,6 +36,13 @@ $ resint check paper.tex --repo ./code
 **No API key. No account. No dependencies.** Most of resint is arithmetic,
 parsing, and HTTP. It runs offline in about two seconds.
 
+Every check here needs **ground truth outside the text** -- a live index, an
+actual repository, or arithmetic over the precision the paper itself reported.
+That is why reading the paper closely, however carefully, does not substitute
+for it: you cannot tell by reading whether a DOI resolves, whether t(20)=2.086
+really gives p=.03, or whether the config a run would load matches the one the
+methods section describes.
+
 ---
 
 ## Who it's for
@@ -126,9 +133,11 @@ mindmap
 | `stats/pvalue-mismatch` | A reported *p* that the test statistic does not produce | |
 | `stats/grim` | A mean arithmetically impossible for the stated *N* | |
 | `stats/significance-unsupported` | Claims of reliability with no test anywhere in the paper | |
-| `bib/unresolved` | References that exist in no index — the fabricated-citation signal | network |
-| `bib/metadata-drift` | Entries whose year or title disagrees with the canonical record | network |
+| `bib/unresolved` | A DOI that resolves nowhere — the fabricated-citation signal | network |
+| `bib/doi-mismatch` | A DOI that resolves **to a different paper** | network |
+| `bib/metadata-drift` | Entries whose year disagrees with the canonical record | network |
 | `bib/orphans` | Keys cited with no entry, entries never cited | |
+| `bib/unindexed` | No DOI and no title match. Off by default | network |
 | `repro/hparam-drift` | The paper's hyperparameters against the ones a run would use | `--repo` |
 | `repro/seed-claim` | "Averaged over five seeds" when the code fixes one | `--repo` |
 | `repro/entrypoint-missing` | README commands pointing at files that do not exist | `--repo` |
@@ -138,6 +147,32 @@ mindmap
 `resint rules` prints each rule's blind spots. **Every rule declares what it
 cannot detect**, and that limitation travels with the finding into JSON and
 SARIF output.
+
+### How well each rule works
+
+Not published yet, and that is deliberate. Every number this project has
+reported so far is a **robustness** number -- no crashes, no anchor failures,
+every rule executed. Those say the plumbing works; they say nothing about
+whether the findings are right.
+
+The two rules whose precision was actually checked were **both wrong every
+time they fired**. `stats/pvalue-mismatch` produced three findings on real
+papers, all three the authors' rounding read as their error.
+`numbers/table-arithmetic` produced two, both columns of independent rates
+mistaken for partitions. Five findings, five false positives. That is the
+strongest available argument for not publishing the rest until they are
+measured.
+
+Measurement is underway (`tools/review.py`), and each rule will carry four
+numbers: how often it fires, **findings per paper**, precision with a Wilson
+interval, and the sample size behind it. Rules below the bar get narrowed,
+downgraded, or turned off by default, and the changelog will say which --
+because narrowing a rule silently orphans anyone's suppressions.
+
+Every rule also has a **planted case** — a document built so that rule must
+fire. A rule that stays silent on real papers may be correct and rare, or
+silently broken, and no amount of corpus separates those: it gives you a
+larger zero. The planted case is what does.
 
 ---
 
@@ -160,6 +195,24 @@ One anchor is an assertion you have to go and check. Two make it a comparison
 you can verify by reading the finding itself. That difference is the product.
 
 The `✓` marks a finding as **computed** rather than judged.
+
+### You can run it twice
+
+A finding's identity is its **fingerprint** — built from the rule and the
+content it is about, never from line numbers. Add a paragraph to your
+introduction and every line below it moves; the fingerprints do not. So a
+second run shows what is genuinely new rather than reporting the whole paper
+again.
+
+And a judgement can be written beside the line it excuses:
+
+```latex
+ibitem{knuth1984}  % resint: ignore bib/unindexed -- a textbook, no DOI
+```
+
+The reason is required. A suppressed finding is still produced, still counted,
+and still in the JSON with its reason — so a suppression can never hide a
+regression.
 
 ### It tells you what it could not check
 
@@ -290,10 +343,13 @@ The key comes from the environment (`GROQ_API_KEY`, `OPENAI_API_KEY`,
 `GEMINI_API_KEY`, …), **never from this file** — it is committed alongside
 your paper. Ollama runs locally, needs no key, and sends nothing anywhere.
 
-**The model never renders the verdict.** It extracts a correspondence and
-quotes it verbatim; code then locates every quote in the real source, does the
-arithmetic, and decides. A quote that appears nowhere is discarded, so a
-hallucination cannot become a finding — and neither can an instruction
+**The model never renders the verdict, and never returns a position.** It
+returns a verbatim quote; code finds the offset. Never the reverse -- a model
+asked for character positions produces plausible ones that are wrong and
+nothing downstream can tell, while a model asked to quote produces text that
+either appears in the source or does not, which code settles exactly. Found
+once it anchors; found zero times or three, it is discarded. So a hallucination
+cannot become a finding — and neither can an instruction
 injected into a paper, because invented text cannot supply the second anchor
 every finding requires.
 

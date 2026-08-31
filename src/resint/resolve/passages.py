@@ -149,6 +149,18 @@ def _document_frequency(blocks) -> dict[str, int]:
     return counts
 
 
+def queryable(claim: str) -> bool:
+    """Whether a claim carries enough vocabulary to search on at all.
+
+    An empty result from :func:`retrieve` means one of two very different
+    things: the cited paper says nothing on the subject, or the claim was too
+    thin to form a query -- "This is well established [12]" has no content
+    words to match. The first is a fact about the paper; the second is a
+    limitation of ours, and a rule should abstain rather than move on quietly.
+    """
+    return bool(terms(claim) or numbers(claim))
+
+
 def retrieve(claim: str, text: str, k: int = 3) -> list[Passage]:
     """The ``k`` paragraphs most likely to bear on ``claim``.
 

@@ -134,6 +134,49 @@ class MeanExtraction:
     unchecked: list[str]
 
 
+def _sample_sizes(text: str) -> list[tuple[int, int]]:
+    """Every stated sample size in a stretch of text, with its offset."""
+    return [(m.start("n"), int(m.group("n"))) for m in _N.finditer(text)]
+
+
+def _resolve_n(doc, s_start: int, s_end: int, sentence: str):
+    """The sample size a mean in this sentence belongs to, and how sure we are.
+
+    Papers put N in Participants, or a table header, or a group label -- almost
+    never beside the mean. Requiring both in one sentence found means in 1 of
+    148 real papers, so GRIM never ran.
+
+    Widening the search is only safe while the answer stays unambiguous, so
+    each step out requires exactly one candidate. Two sample sizes in a
+    section is a study with groups, and picking one would be a guess -- which
+    is how a confident, wrong GRIM finding gets made.
+    """
+    local = _sample_sizes(sentence)
+    if len(local) == 1:
+        offset, value = local[0]
+        return value, s_start + offset, "sentence"
+    if len(local) > 1:
+        return None, None, f"{len(local)} sample sizes"
+
+    section = doc.section_bounds_at(s_start)
+    if section:
+        lo, hi = section
+        found = _sample_sizes(doc.text[lo:hi])
+        if len(found) == 1:
+            offset, value = found[0]
+            return value, lo + offset, "section"
+        if len(found) > 1:
+            return None, None, f"{len(found)} sample sizes in this section"
+
+    whole = _sample_sizes(doc.text)
+    if len(whole) == 1:
+        offset, value = whole[0]
+        return value, offset, "document"
+    if len(whole) > 1:
+        return None, None, f"{len(whole)} sample sizes in the paper"
+    return None, None, "no sample size"
+
+
 def extract_means(doc: Normalized, src: Source) -> MeanExtraction:
     """Means paired with an unambiguous sample size in the same sentence.
 
@@ -151,23 +194,18 @@ def extract_means(doc: Normalized, src: Source) -> MeanExtraction:
         if not found_means:
             continue
 
-        found_n = list(_N.finditer(sentence))
-        if len(found_n) != 1:
-            reason = "no sample size" if not found_n else f"{len(found_n)} sample sizes"
+        n_value, n_at, how = _resolve_n(doc, s_start, s_end, sentence)
+        if n_value is None:
             line = doc.line_of(doc.raw_offset(s_start + found_means[0].start()))
-            unchecked.append(
-                f"mean at line {line} not checked: {reason} in the same sentence"
-            )
+            unchecked.append(f"mean at line {line} not checked: {how}")
             continue
 
-        n_match = found_n[0]
-        n_value = int(n_match.group("n"))
         item_match = _ITEMS.search(sentence)
         items = int(item_match.group("items")) if item_match else 1
         section = doc.section_at(s_start)
 
         n_span = _span(
-            doc, src, s_start + n_match.start("n"), s_start + n_match.end("n"), section
+            doc, src, n_at, n_at + len(str(n_value)), section
         )
 
         for mm in found_means:
@@ -178,6 +216,7 @@ def extract_means(doc: Normalized, src: Source) -> MeanExtraction:
                     items=items,
                     items_inferred=item_match is None,
                     context=section,
+                    n_source=how,
                     span=_span(
                         doc, src,
                         s_start + mm.start("mean"),

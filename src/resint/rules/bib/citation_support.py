@@ -36,7 +36,7 @@ from __future__ import annotations
 from typing import Iterator
 
 from ...model.verify import locate
-from ...resolve.passages import retrieve, terms
+from ...resolve.passages import queryable, retrieve, terms
 from ..registry import Context, rule
 
 #: Passages sent per citation. Three is enough for a claim to meet its
@@ -139,6 +139,7 @@ def check(ctx: Context) -> Iterator:
     fetched = ctx.paper.cited_texts
 
     unreadable = 0
+    unqueryable = 0
     unanswered = 0
     asked = 0
     over_budget = 0
@@ -152,6 +153,14 @@ def check(ctx: Context) -> Iterator:
             cited = fetched.get(key)
             if cited is None or not cited.usable:
                 unreadable += 1
+                continue
+
+            if not queryable(claim.text):
+                # Our limitation, not the paper's. "This is well established
+                # [12]" carries no content words to search on, so we never
+                # looked -- which is a different statement from having looked
+                # and found nothing, and is owed an abstention.
+                unqueryable += 1
                 continue
 
             passages = retrieve(
@@ -220,6 +229,13 @@ def check(ctx: Context) -> Iterator:
                     "soften it, or cite a work that supports it."
                 ),
             )
+
+    if unqueryable:
+        noun = "claim" if unqueryable == 1 else "claims"
+        ctx.abstain(
+            f"{unqueryable} cited {noun} carried too few content words to "
+            "search the cited paper on, so they were never checked"
+        )
 
     if unreadable:
         noun = "reference" if unreadable == 1 else "references"

@@ -5,12 +5,17 @@ preprint listing while the work has since appeared in proceedings, so the year
 and venue are wrong in every paper that cites it. The uncommon cause is an
 entry assembled from memory that happens to match a real record.
 
-Only two fields are checked, both chosen for having an unambiguous answer.
-Year is exact. Title is compared on token overlap, which tolerates
-capitalization, subtitle punctuation, and brace protection while still
-catching a genuinely different work. Author lists are deliberately excluded:
-initials, particles, transliteration, and "and others" make string comparison
-a false-positive generator.
+Only the year is checked here, chosen for having an unambiguous answer -- and
+the finding carries the corrected line, not just the complaint. A tool that
+tells you the year is wrong gets read once; a tool that hands you the field to
+paste gets run again.
+
+Titles used to be compared here too, and that was the wrong home for the
+check: a title disagreeing under a resolving DOI does not mean the year is
+stale, it means the DOI points at a different paper. That is a separate claim
+with a different fix, and it now lives in ``bib/doi-mismatch`` where it is
+corroborated against the author list instead of resting on one string
+comparison.
 """
 
 from __future__ import annotations
@@ -102,22 +107,17 @@ def check(ctx: Context) -> Iterator:
                     "for work that later appeared in proceedings."
                 ),
                 anchors=[entry.span_for("year"), entry.span],
-                fix=f"Confirm the intended version and set the year accordingly.",
+                fix=(
+                    "Confirm the intended version, then replace the year with: "
+                    f"year = {{{record.year}}}"
+                ),
             )
 
-        if entry.title and record.title:
-            overlap = title_overlap(entry.title, record.title)
-            if overlap < _TITLE_FLOOR:
-                yield ctx.finding(
-                    severity="high",
-                    message=(
-                        f"[{entry.key}] gives the title {entry.title!r}, but the "
-                        f"record it resolves to is {record.title!r}. These are "
-                        "different works."
-                    ),
-                    anchors=[entry.span_for("title"), entry.span],
-                    fix="Check whether the key points at the intended reference.",
-                )
+        # A title that disagrees under a resolving DOI is not drift -- it means
+        # the DOI points at somebody else's paper, which is a different claim
+        # with different evidence and a different fix. It lives in
+        # bib/doi-mismatch, where it is corroborated against the author list
+        # rather than resting on one string comparison.
 
     if guessed:
         shown = ", ".join(f"[{k}]" for k in guessed[:4])

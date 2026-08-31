@@ -19,7 +19,7 @@ Severity shown is the **default**. Rules may escalate or reduce per finding —
 a *p*-value off in the fourth decimal is a typo, while one that flips a
 significance decision changes what the paper claims.
 
-**19 rules** — 13 run with no API key, 6 need `--repo`.
+**21 rules** — 15 run with no API key, 6 need `--repo`.
 
 ## `numbers/` — Internal consistency
 
@@ -51,7 +51,7 @@ A stated total is compared against the sum of the values above it. A percentage 
 
 Any table the extractor marked irregular is skipped outright. A misparsed grid produces confident nonsense, and reporting "could not read this table" costs far less trust than reporting a total that was never in the paper.
 
-**Cannot detect.** Tables whose cell structure did not survive extraction; those are skipped and reported as unchecked rather than guessed at. Also totals over a subset of rows, where the paper sums some entries and not others without saying so.
+**Cannot detect.** Tables whose cell structure did not survive extraction; those are skipped and reported as unchecked rather than guessed at. Also totals over a subset of rows, where the paper sums some entries and not others without saying so. A percentage column missing more than a few points is not reported either: at that distance a partition with a dropped category cannot be told apart from a column of independent rates, each row having its own denominator, and guessing between them produces confident nonsense.
 
 <sub>Requires: `paper.tables`</sub>
 
@@ -125,6 +125,28 @@ Both anchors point into the author's own files -- the citing sentence and the bi
 
 <sub>Requires: `paper.claims`, `paper.bib`, `paper.cited_texts`</sub>
 
+### `bib/doi-mismatch`
+
+**high** · deterministic
+
+The DOI resolves, but to a different paper.
+
+Distinct from ``bib/unresolved``, where nothing is found, and from ``bib/metadata-drift``, where the right record disagrees about a detail. Here the lookup succeeds and returns *somebody else's work*.
+
+Two things cause it, and both are worth catching:
+
+*A key pointing at the wrong entry.* Someone copies a BibTeX block, edits the title, and leaves the DOI. The bibliography then cites a paper the author has probably never read, and every reader who follows the link lands somewhere unexpected.
+
+*A fabricated DOI that happens to resolve.* A plausible-looking DOI invented by a language model has a real chance of colliding with a registered record. ``bib/unresolved`` cannot see that -- the DOI resolves, so nothing is missing. This rule is what notices the record is about something else entirely, and as writing becomes more model-assisted it is the failure mode that matters most.
+
+**Two signals, never one.** A title that scores low on its own is weak evidence: subtitles get dropped, translations differ, a chapter is cited under its book's name. So the author list has to corroborate. If the first author matches, this is reported as a title that needs checking rather than as the wrong paper; only when neither title nor author lines up is it called a mismatch. Single-signal disagreements do not reach ``high``.
+
+Authoritative records only. A title-search match is a best guess, and declaring "this is a different paper" against a guess is precisely the error the rule exists to catch.
+
+**Cannot detect.** A DOI pointing at a genuinely similar paper -- a preprint against its published version, or one paper in a series -- where the titles overlap enough to look like the same work. It compares titles and surnames only, so a translated title, a chapter cited under its book's name, or an entry whose author field is empty will not reach the confidence needed to report. It also cannot check a DOI that no index resolves at all; that is bib/unresolved's job.
+
+<sub>Requires: `paper.bib`, `paper.resolutions`</sub>
+
 ### `bib/metadata-drift`
 
 **med** · deterministic
@@ -133,7 +155,9 @@ The entry resolves, but says something else.
 
 The common cause is benign and worth catching anyway: an entry copied from a preprint listing while the work has since appeared in proceedings, so the year and venue are wrong in every paper that cites it. The uncommon cause is an entry assembled from memory that happens to match a real record.
 
-Only two fields are checked, both chosen for having an unambiguous answer. Year is exact. Title is compared on token overlap, which tolerates capitalization, subtitle punctuation, and brace protection while still catching a genuinely different work. Author lists are deliberately excluded: initials, particles, transliteration, and "and others" make string comparison a false-positive generator.
+Only the year is checked here, chosen for having an unambiguous answer -- and the finding carries the corrected line, not just the complaint. A tool that tells you the year is wrong gets read once; a tool that hands you the field to paste gets run again.
+
+Titles used to be compared here too, and that was the wrong home for the check: a title disagreeing under a resolving DOI does not mean the year is stale, it means the DOI points at a different paper. That is a separate claim with a different fix, and it now lives in ``bib/doi-mismatch`` where it is corroborated against the author list instead of resting on one string comparison.
 
 **Cannot detect.** Which of the two records is correct when a work legitimately exists in several versions. Author lists are not compared at all, because initials and name particles make that a false-positive generator.
 
@@ -151,27 +175,47 @@ The undefined-key half is more serious than it first looks. A ``\cite{}`` with n
 
 The uncited half is grouped into a single finding rather than one per entry. A working bibliography routinely carries a dozen entries the draft has not reached yet; emitting thirteen separate findings for that buries everything else in the report and teaches the reader to skim past the whole tool. It is one situation, so it is one finding.
 
-**Cannot detect.** Entries kept deliberately for a camera-ready version or a companion paper, and keys supplied by a bibliography style rather than the .bib file. Neither is distinguishable from an oversight by inspection.
+**Cannot detect.** Entries kept deliberately for a camera-ready version or a companion paper, and keys supplied by a bibliography style rather than the .bib file. Neither is distinguishable from an oversight by inspection. It also cannot see citations produced by a macro the paper defines itself: a definition is skipped as a template, so a key only ever passed through that macro reads as uncited.
 
 <sub>Requires: `paper.citations`, `paper.bib`</sub>
+
+### `bib/unindexed`
+
+**low** · deterministic
+
+No DOI, and a title search found nothing.
+
+Split out of ``bib/unresolved``, which used to report this at the same table as a DOI that fails to resolve. Across 68 real papers that produced 176 title-only findings against 18 DOI ones -- and the 176 buried the 18.
+
+**Off by default**, because a failed title search is weak evidence about the world and strong evidence about our coverage. Titles miss for entirely ordinary reasons: abbreviated in the bibliography, a non-English venue, a book or a standard or a chapter, a workshop paper nobody registered, or simply a gap in what Crossref, OpenAlex, arXiv and DBLP happen to hold. None of those mean the reference does not exist.
+
+It is still worth having. A bibliography where thirty entries resolve and one does not is telling you something, and someone auditing a reference list deliberately wants the whole picture. That is an opt-in job, not a default one:
+
+rules:       bib/unindexed: on
+
+Entry types that legitimately sit outside these indices -- theses, technical reports, ``@misc``, software -- are excluded outright rather than reported quietly. Counting them would inflate the rate with entries nobody should expect to find, which is how the original rule came to fire on three papers in four.
+
+**Cannot detect.** Whether the reference exists. This rule reports only that four indices were searched by title and none held a match, which is a statement about coverage rather than about the work. Abbreviated titles, non-English venues, books, standards, chapters and workshop papers all fail to match while being entirely real. Entry types that sit outside these indices by nature are excluded rather than reported, so absence here is not evidence of fabrication -- for that, see bib/unresolved, which requires a DOI.
+
+<sub>Requires: `paper.bib`, `paper.resolutions`</sub>
 
 ### `bib/unresolved`
 
 **high** · deterministic
 
-References that exist in no index.
+A DOI that does not resolve.
 
-The signal this is really after is fabrication. A reference that resolves in none of Crossref, OpenAlex, arXiv or Semantic Scholar, while claiming to be a journal article with a DOI, is very often a work that was never written.
+The fabrication signal, and now only that. A DOI is a claim about one registered record: it either resolves or it does not, and a DOI that resolves nowhere while the entry claims to be a published article is very often a work that was never written.
 
-Three guards keep this from becoming an accusation machine:
+Everything weaker moved out. A title search that finds nothing used to be reported here at the same table, and across 68 real papers that meant 176 title-only findings burying 18 DOI ones -- the rule fired on three papers in four and read as a warning banner. Titles miss for ordinary reasons; DOIs do not. That half is now ``bib/unindexed``, off by default.
+
+Two guards remain, and both are about not overstating:
 
 A failed lookup is never a finding. UNKNOWN means the network answered     badly, not that the paper is wrong, and it is reported as unchecked.
 
-Entry types that legitimately sit outside the indices -- theses,     technical reports, misc -- drop to low severity. Plenty of real work is     simply not indexed.
+Only indices that actually answered are named. An index that was down was     not a search, and saying otherwise would make an absence claim larger than     the evidence behind it.
 
-A DOI that fails to resolve is treated as stronger evidence than a title     that fails to match, because a DOI is a claim about a specific registered     record rather than a string that might be spelled differently.
-
-**Cannot detect.** Genuinely obscure work absent from all four indices: theses, institutional reports, non-English venues, and very recent preprints. It also cannot tell a fabricated reference from a real one whose title was abbreviated in the bibliography, since a shortened title scores too low against the full record to count as a match. Severity is reduced wherever that is likely, but the rule cannot tell obscure from invented.
+**Cannot detect.** Anything without a DOI -- that is bib/unindexed, which is off by default because a failed title search says more about index coverage than about the work. It also cannot tell a fabricated DOI from one mistyped by a character, nor a DOI registered so recently that the indices have not caught up. A DOI that resolves to the wrong paper is bib/doi-mismatch's job, not this one's.
 
 <sub>Requires: `paper.bib`, `paper.resolutions`</sub>
 
@@ -273,7 +317,7 @@ The strength of the claim is code's judgement too, from a closed vocabulary. "Su
 
 **Cannot detect.** Claims whose evidence is not in a table this parser could read: results stated only in prose, in a figure, or in a table too irregular to parse. It compares two numbers against each other and so cannot tell whether a margin is significant in the statistical sense, which needs variance the table usually does not report. A paper reporting a small improvement in modest language is correct and is not flagged, and a large margin is never flagged however it is described.
 
-<sub>Requires: `paper.text`, `paper.tables`</sub>
+<sub>Requires: `paper.text`, `paper.sections`, `paper.tables`</sub>
 
 ### `claim/scope-creep`
 
@@ -291,7 +335,7 @@ Every name it reports is then checked against the paper's own text. A dataset th
 
 **Cannot detect.** Breadth claimed in language outside the vocabulary this rule recognises, and breadth that is genuinely justified -- a paper evaluating on two datasets that really do span its claimed domains is flagged the same as one that does not, because counting cannot tell those apart. It counts what the paper reports rather than what was run, so evaluations described only in a figure or an appendix table this parser could not read are missed.
 
-<sub>Requires: `paper.text`</sub>
+<sub>Requires: `paper.text`, `paper.sections`</sub>
 
 ### `claim/unimplemented`
 
@@ -309,7 +353,7 @@ The finding names what was searched, through ``absent_from``, because an absence
 
 **Cannot detect.** Anything implemented under vocabulary the paper does not use, which is the normal case for research code: a capability called 'sharding' in the paper and 'partition' in the source leaves a trace this rule cannot see. It reads names -- paths, symbols, config keys, the README -- and not function bodies, so a capability implemented inline inside an unrelated function is invisible. It cannot tell a released subset from an overstated claim, and says so rather than guessing.
 
-<sub>Requires: `paper.text`, `repo.files`, `repo.symbols`, `repo.readme`, `repo.configs`</sub>
+<sub>Requires: `paper.text`, `paper.sections`, `repo.files`, `repo.symbols`, `repo.readme`, `repo.configs`</sub>
 
 ### `claim/unsupported`
 
@@ -347,4 +391,4 @@ The rule reports the disparity, never the conclusion. A paper may have every rea
 
 **Cannot detect.** Budgets the paper does not state. A baseline quoted from another paper carries that paper's setup and usually no description of it, which is the most common way an unfair comparison stays invisible. It compares one dimension at a time, so it cannot see that a smaller model was trained longer to compensate, and it cannot tell a deliberate scaling study from an oversight -- it reports the disparity and leaves that judgement to the reader.
 
-<sub>Requires: `paper.text`</sub>
+<sub>Requires: `paper.text`, `paper.sections`</sub>

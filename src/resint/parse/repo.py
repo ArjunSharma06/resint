@@ -85,6 +85,24 @@ def _iter_files(root: Path) -> tuple[list[Path], list[str]]:
     return found, notes
 
 
+#: Every slice this loader can populate. Named so "no needs given" can mean
+#: "all of it" without a caller having to enumerate them.
+ALL_REPO_SLICES = frozenset(
+    {
+        "repo.files",
+        "repo.readme",
+        "repo.readme_source",
+        "repo.configs",
+        "repo.seeds",
+        "repo.symbols",
+        "repo.deps",
+        "repo.links",
+        "repo.entrypoints",
+        "repo.lockfiles",
+    }
+)
+
+
 def read_repo(root: str | Path, needs: set[str] | None = None) -> Repo:
     """Assemble the Repo IR from a checkout on disk."""
     base = Path(root)
@@ -93,7 +111,13 @@ def read_repo(root: str | Path, needs: set[str] | None = None) -> Repo:
         repo.unchecked.append(f"{base} is not a directory; no repository was read")
         return repo
 
-    wanted = needs or set()
+    # Unspecified means everything, matching paper_from_path. It used to mean
+    # *nothing*: read_repo(root) with no needs= returned a Repo with every
+    # slice empty, so every repro rule looked, found an empty world and stayed
+    # silent. Indistinguishable from a clean repository, and the coverage
+    # census on hparam-drift is what finally showed it -- "2 named, 0 located"
+    # on a fixture built so it must find both.
+    wanted = set(ALL_REPO_SLICES) if needs is None else set(needs)
     files, notes = _iter_files(base)
     repo.unchecked.extend(notes)
     repo.files = [str(p.relative_to(base)).replace("\\", "/") for p in files]

@@ -292,9 +292,24 @@ def main(argv=None) -> int:
 
     with out_path.open("w", encoding="utf-8") as handle:
         # max_tasks_per_child bounds memory drift without a recycling loop.
-        with ProcessPoolExecutor(
-            max_workers=workers, max_tasks_per_child=25
-        ) as pool:
+        # No max_tasks_per_child, and this is demonstrated rather than
+        # inferred. A minimal reproduction -- max_tasks_per_child=5, one
+        # worker, twelve trivial tasks -- hangs before completing the fifth on
+        # CPython 3.13.1 / Windows: the retired worker exits, no replacement
+        # spawns, and the parent blocks in wait() indefinitely. Even pool
+        # shutdown never returns.
+        #
+        # That is what stalled a sweep at exactly 25 completions, and almost
+        # certainly what stopped an earlier batch three papers short, which was
+        # misread at the time as the session ending.
+        #
+        # Ruled out on the way: the Pacer, connection reuse, and the resolver's
+        # thread pool -- none of which are involved, and all of which would have
+        # been far worse, being live in ordinary `resint check` runs.
+        #
+        # The memory drift it guarded against is real but small, and a bounded
+        # run exits anyway. A deadlock is worse than a large process.
+        with ProcessPoolExecutor(max_workers=workers) as pool:
             pending = {
                 pool.submit(
                     check_one,
@@ -308,15 +323,26 @@ def main(argv=None) -> int:
                 for p in papers
             }
             outstanding = set(pending)
-            deadline = time.perf_counter() + args.timeout * len(papers)
+
+            # Progress, not a total budget. The old deadline was
+            # timeout x papers -- six hours for this run -- so anything that
+            # hung was indistinguishable from work for most of a working day.
+            # What actually matters is whether the run is still finishing
+            # papers, and a stall shows up in seconds rather than hours.
+            stalled_after = max(args.timeout, 120.0)
 
             while outstanding:
-                remaining = deadline - time.perf_counter()
-                if remaining <= 0:
-                    break
                 done, outstanding = wait(
-                    outstanding, timeout=remaining, return_when=FIRST_COMPLETED
+                    outstanding, timeout=stalled_after, return_when=FIRST_COMPLETED
                 )
+                if not done:
+                    print("", file=sys.stderr)
+                    print(
+                        f"  sweep: nothing completed in {stalled_after:g}s -- "
+                        f"stopping with {len(records)} of {len(papers)} done.",
+                        file=sys.stderr,
+                    )
+                    break
                 for future in done:
                     paper = pending[future]
                     try:

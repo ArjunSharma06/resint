@@ -337,6 +337,13 @@ def _build(
     paper = Paper(source_id=source_id)
     paper.sections = list(doc.sections)
 
+    # Read from the raw source, not the normalized text: a comment is exactly
+    # what normalization strips, and its line number has to be the author's.
+    from .inline import find_directives
+
+    paper.inline_suppressions, inline_notes = find_directives(text)
+    paper.unchecked.extend(inline_notes)
+
     wanted = needs if needs is not None else set(ALL_SLICES)
 
     if "paper.text" in wanted:

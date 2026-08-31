@@ -408,9 +408,32 @@ def test_a_pdf_only_submission_is_a_settled_fact(monkeypatch, tmp_path):
 
 
 def test_a_network_failure_is_unknown(monkeypatch, tmp_path):
+    """Could not ask. Never confused with having asked and been told no."""
+    from resint.resolve.http import Unreachable
+
+    def _down(url, index):
+        raise Unreachable("arxiv unreachable: connection refused")
+
+    source = HttpFullText(scratch=tmp_path)
+    monkeypatch.setattr(source, "_get", _down)
+    result = source.fetch(entry(eprint="1706.03762"))
+    assert result.status is Status.UNKNOWN
+    assert not result.checkable, "UNKNOWN can never support a finding"
+
+
+def test_a_missing_eprint_is_not_found_not_unknown(monkeypatch, tmp_path):
+    """A 404 is an answer: arXiv has no e-print under that identifier.
+
+    This used to collapse into UNKNOWN alongside network failure. That ran the
+    safe way -- nothing was over-claimed -- but a paper genuinely absent from
+    arXiv was reported as "could not check" forever, and the rule could never
+    say which of the two it had met.
+    """
     source = HttpFullText(scratch=tmp_path)
     monkeypatch.setattr(source, "_get", lambda url, index: None)
-    assert source.fetch(entry(eprint="1706.03762")).status is Status.UNKNOWN
+    result = source.fetch(entry(eprint="1706.03762"))
+    assert result.status is Status.NOT_FOUND
+    assert result.checkable, "a settled answer, even though it found nothing"
 
 
 def test_a_paper_outside_the_open_access_subset_is_not_found(monkeypatch):

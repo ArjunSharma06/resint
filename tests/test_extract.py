@@ -129,10 +129,36 @@ def test_explicit_item_count_is_used_and_marked_certain():
     assert r.means[0].items_inferred is False
 
 
-def test_abstains_when_no_sample_size_is_in_the_sentence():
+def test_a_sample_size_elsewhere_in_the_paper_is_used_and_labelled():
+    """Papers put N in Participants, or a table header, or a group label --
+    almost never beside the mean. Requiring both in one sentence found means
+    in 1 of 148 real papers, so GRIM never ran on anything.
+
+    Widening the search is only safe while the answer stays unambiguous, so
+    the mean records *where* its N came from and a rule can weigh it.
+    """
     r = means_of("The mean was 3.47 overall. Separately, N = 20 took part.")
+    assert len(r.means) == 1
+    assert r.means[0].n == 20
+    assert r.means[0].n_source == "document"
+    assert not r.means[0].n_is_local
+
+
+def test_a_sample_size_in_the_same_sentence_is_marked_as_such():
+    r = means_of("With N = 20 participants the mean was 3.47.")
+    assert r.means[0].n_source == "sentence"
+    assert r.means[0].n_is_local
+
+
+def test_several_sample_sizes_in_the_paper_stay_ambiguous():
+    """Two Ns is a study with groups. Picking one would be a guess, and a
+    guess here produces a confident, wrong GRIM finding."""
+    r = means_of(
+        "Group A had N = 20 members. Group B had N = 25 members. "
+        "The mean was 3.47."
+    )
     assert r.means == []
-    assert any("no sample size" in u for u in r.unchecked)
+    assert any("sample sizes in the paper" in u for u in r.unchecked)
 
 
 def test_abstains_when_the_sentence_is_ambiguous():

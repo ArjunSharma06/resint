@@ -64,7 +64,10 @@ def test_accented_entry_does_not_drift(clean, corpus_resolver):
 
 
 def test_expected_defect_count(planted):
-    assert planted.summary() == "10 findings (3 high, 5 med, 2 low)"
+    # One fewer than before the bib/unresolved split: the unindexable thesis
+    # is no longer counted at all, because a thesis Crossref has never heard
+    # of is not a finding at any severity.
+    assert planted.summary() == "9 findings (3 high, 5 med, 1 low)"
 
 
 def test_grim_violation_is_caught(planted):
@@ -104,16 +107,20 @@ def test_unresolvable_reference_is_high_when_it_claims_a_doi(planted):
     assert "does not resolve" in found[0].message
 
 
-def test_unresolvable_thesis_drops_to_low(planted):
-    """Plenty of real work is simply not indexed. Severity has to reflect that."""
-    low = [
+def test_an_unindexable_thesis_is_not_reported_at_all(planted):
+    """Plenty of real work is simply not indexed, and a thesis Crossref has
+    never heard of is not a finding at any severity.
+
+    It used to be reported at low severity, which still spent a line of the
+    report and still asked the reader to judge something the tool could not
+    know. Excluding it from the denominator is the honest version -- and it is
+    a large part of why the rule fired on three papers in four.
+    """
+    assert not [
         f
         for f in planted.findings
-        if f.rule_id == "bib/unresolved" and f.severity is Severity.LOW
+        if f.rule_id == "bib/unresolved" and "obscure2018" in f.message
     ]
-    assert len(low) == 1
-    assert "obscure2018" in low[0].message
-    assert "phdthesis entries are often" in low[0].message
 
 
 def test_year_drift_is_caught(planted):

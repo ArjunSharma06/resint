@@ -25,7 +25,7 @@ from dataclasses import dataclass, field, replace
 
 from ..ir.paper import BibEntry
 from ..parse.bibtex import fold
-from .base import Record, Resolution, Status
+from .base import Record, Resolution, Status, Unreachable
 
 USER_AGENT = "resint/0.1 (https://github.com/ArjunSharma06/resint; open-source paper linter)"
 
@@ -56,11 +56,44 @@ def title_matches(left: str, right: str) -> bool:
     return title_similarity(left, right) >= _MATCH_FLOOR
 
 
-def _best(entry_title: str, candidates):
-    """The closest candidate above the floor, or None.
+#: A title alone may match this well and still be the wrong paper. Above the
+#: floor but below this, a second signal has to agree.
+_ALONE_FLOOR = 0.90
+
+
+def _corroborates(entry, record) -> bool:
+    """Whether something other than the title agrees.
+
+    Title similarity is one signal and a weak one: series papers, corrected
+    versions and translations all score highly against each other. Requiring
+    the first author's surname or the year to line up as well turns a plausible
+    string match into an identification.
+    """
+    if entry is None or record is None:
+        return False
+
+    from ..rules.bib.doi_mismatch import authors_agree
+
+    if authors_agree(entry.authors, record.authors):
+        return True
+
+    stated, canonical = entry.year.strip(), (record.year or "").strip()
+    if stated.isdigit() and canonical.isdigit():
+        # Within a year: a preprint and its published version routinely
+        # straddle a new year without being different work.
+        return abs(int(stated) - int(canonical)) <= 1
+    return False
+
+
+def _best(entry_title: str, candidates, entry=None):
+    """The closest candidate that is actually identified, or None.
 
     Search endpoints rank by their own relevance, which is not ours -- the
     first result over the line is regularly a worse match than the third.
+
+    Two signals unless the title match is near-exact. A single strong-looking
+    title is how a search endpoint hands back a different paper by the same
+    group, and every rule downstream then reasons about the wrong record.
     """
     scored = [
         (title_similarity(entry_title, r.title), r) for r in candidates if r
@@ -68,7 +101,12 @@ def _best(entry_title: str, candidates):
     scored = [(s, r) for s, r in scored if s >= _MATCH_FLOOR]
     if not scored:
         return None
-    return max(scored, key=lambda pair: pair[0])[1]
+
+    scored.sort(key=lambda pair: -pair[0])
+    for score, record in scored:
+        if score >= _ALONE_FLOOR or _corroborates(entry, record):
+            return record
+    return None
 
 
 def _as_title_match(record):
@@ -86,7 +124,6 @@ def normalize_doi(raw: str) -> str:
     return doi
 
 
-
 class Pacer:
     """Per-index request spacing.
 
@@ -100,7 +137,7 @@ class Pacer:
     """
 
     #: Seconds between requests, per index.
-    DEFAULTS = {"crossref": 0.05, "openalex": 0.05, "arxiv": 3.0}
+    DEFAULTS = {"crossref": 0.05, "openalex": 0.05, "arxiv": 3.0, "dblp": 1.0}
 
     def __init__(self, intervals: dict | None = None, clock=None, sleep=None):
         self.intervals = dict(self.DEFAULTS if intervals is None else intervals)
@@ -153,7 +190,7 @@ class HttpResolver:
 
     @property
     def indices(self) -> tuple[str, ...]:
-        return ("crossref", "openalex", "arxiv")
+        return ("crossref", "openalex", "arxiv", "dblp")
 
     # --- transport ------------------------------------------------------
 
@@ -170,10 +207,15 @@ class HttpResolver:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 if response.status != 200:
-                    return None
+                    raise Unreachable(f"{index} answered {response.status}")
                 return json.loads(response.read().decode("utf-8"))
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError):
-            return None
+        except urllib.error.HTTPError as exc:
+            # 404 from a lookup endpoint is a real answer: no such record.
+            if exc.code == 404:
+                return None
+            raise Unreachable(f"{index} answered {exc.code}") from exc
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+            raise Unreachable(f"{index} unreachable: {exc}") from exc
 
     # --- per-index adapters ---------------------------------------------
 
@@ -197,7 +239,7 @@ class HttpResolver:
             _from_crossref(item)
             for item in payload.get("message", {}).get("items", [])
         ]
-        return _as_title_match(_best(entry.title, candidates))
+        return _as_title_match(_best(entry.title, candidates, entry))
 
     def _openalex(self, entry: BibEntry) -> Record | None:
         if entry.doi:
@@ -214,7 +256,54 @@ class HttpResolver:
         if not payload:
             return None
         candidates = [_from_openalex(item) for item in payload.get("results", [])]
-        return _as_title_match(_best(entry.title, candidates))
+        return _as_title_match(_best(entry.title, candidates, entry))
+
+    def _dblp(self, entry: BibEntry) -> Record | None:
+        """Search DBLP, which indexes computer-science proceedings.
+
+        Added because Crossref, OpenAlex and arXiv between them are blind to a
+        large slice of CS: workshop papers, many conference proceedings, and
+        anything a publisher never registered a DOI for. Those entries were
+        being reported as existing in no index, which is a claim about the
+        world rather than about our coverage.
+        """
+        if not entry.title:
+            return None
+
+        query = urllib.parse.urlencode(
+            {"q": entry.title, "format": "json", "h": "5"}
+        )
+        payload = self._get(
+            f"https://dblp.org/search/publ/api?{query}", "dblp"
+        )
+        if not payload:
+            return None
+
+        hits = ((payload.get("result") or {}).get("hits") or {}).get("hit") or []
+        candidates = []
+        for hit in hits:
+            info = hit.get("info") or {}
+            title = " ".join((info.get("title") or "").split()).rstrip(".")
+            if not title:
+                continue
+            authors = info.get("authors") or {}
+            names = authors.get("author") or []
+            if isinstance(names, dict):
+                names = [names]
+            candidates.append(
+                Record(
+                    source="dblp",
+                    title=title,
+                    year=str(info.get("year") or ""),
+                    authors=tuple(
+                        a.get("text", "") for a in names if isinstance(a, dict)
+                    ),
+                    venue=info.get("venue", "") or "",
+                    doi=normalize_doi(info.get("doi") or ""),
+                    matched_by="title",
+                )
+            )
+        return _best(entry.title, candidates, entry)
 
     def _arxiv(self, entry: BibEntry) -> Record | None:
         if not entry.title:
@@ -231,7 +320,7 @@ class HttpResolver:
             Record(source="arxiv", title=" ".join(t.split()), matched_by="title")
             for t in titles[1:]  # the first <title> is the feed itself
         ]
-        return _best(entry.title, candidates)
+        return _best(entry.title, candidates, entry)
 
     def _get_text(self, url: str, index: str = "arxiv") -> str | None:
         self._paced().wait(index)
@@ -240,10 +329,14 @@ class HttpResolver:
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 if response.status != 200:
-                    return None
+                    raise Unreachable(f"{index} answered {response.status}")
                 return response.read().decode("utf-8", errors="replace")
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError):
-            return None
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise Unreachable(f"{index} answered {exc.code}") from exc
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+            raise Unreachable(f"{index} unreachable: {exc}") from exc
 
     # --- the protocol ---------------------------------------------------
 
@@ -255,27 +348,50 @@ class HttpResolver:
                 detail="entry has neither a DOI nor a title to search on",
             )
 
-        reached_any = False
+        reached: list[str] = []
+        unreachable: list[str] = []
+
         for name, probe in (
             ("crossref", self._crossref),
             ("openalex", self._openalex),
             ("arxiv", self._arxiv),
+            ("dblp", self._dblp),
         ):
             try:
                 record = probe(entry)
-            except Exception:
+            except Unreachable:
+                unreachable.append(name)
                 continue
+            except Exception:
+                unreachable.append(name)
+                continue
+            reached.append(name)
             if record is not None:
-                return Resolution(Status.FOUND, record=record, queried=self.indices)
-            reached_any = True
+                return Resolution(
+                    Status.FOUND, record=record, queried=tuple(reached)
+                )
 
-        if not reached_any:
+        if not reached:
             return Resolution(
                 Status.UNKNOWN,
-                queried=self.indices,
-                detail="no index could be reached",
+                queried=(),
+                detail=f"no index could be reached ({', '.join(unreachable)})",
             )
-        return Resolution(Status.NOT_FOUND, queried=self.indices)
+
+        # Reporting a reference as absent rests on having actually looked.
+        # Naming only the indices that answered keeps the finding's claim the
+        # same size as the evidence behind it -- and an index that was down is
+        # said to have been down, not silently counted as a search.
+        if unreachable:
+            return Resolution(
+                Status.NOT_FOUND,
+                queried=tuple(reached),
+                detail=(
+                    f"{', '.join(unreachable)} could not be reached and "
+                    "was not searched"
+                ),
+            )
+        return Resolution(Status.NOT_FOUND, queried=tuple(reached))
 
 
 def _from_crossref(item: dict) -> Record | None:

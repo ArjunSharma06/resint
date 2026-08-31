@@ -67,6 +67,20 @@ class ReportedMean:
     scale_min: int | None = None
     scale_max: int | None = None
     context: str = ""
+    #: Where the sample size came from: the same sentence, the enclosing
+    #: section, or the document. Papers almost never put N beside the mean --
+    #: it lives in Participants, or a table header, or a group label -- so
+    #: requiring the sentence to hold both found means in 1 paper of 148.
+    #:
+    #: Recorded rather than hidden because it changes what a finding is worth.
+    #: A GRIM violation computed against an N stated in the same breath is
+    #: arithmetic; one computed against the only N in the document is
+    #: arithmetic plus an assumption, and the reader should be told which.
+    n_source: str = "sentence"
+
+    @property
+    def n_is_local(self) -> bool:
+        return self.n_source == "sentence"
 
     @property
     def value(self) -> Decimal:
@@ -117,6 +131,16 @@ class StatTest:
     @property
     def p_decimals(self) -> int:
         return _decimals(self.p_raw)
+
+    @property
+    def statistic_decimals(self) -> int:
+        """Precision the paper reported the statistic to.
+
+        Load-bearing, not cosmetic: ``t = 2.086`` is a claim about an interval
+        [2.0855, 2.0865), and recomputing p from the midpoint alone
+        manufactures disagreements out of the author's rounding.
+        """
+        return _decimals(self.statistic_raw)
 
     def render(self) -> str:
         if self.kind == "F":
@@ -327,3 +351,7 @@ class Paper:
     # paper.resolutions is what causes index lookups.
     cited_texts: dict = field(default_factory=dict)
     unchecked: list[str] = field(default_factory=list)
+    #: "% resint: ignore <rule> -- why", read from the source. A judgement
+    #: about one line belongs beside that line, and travels with it when the
+    #: bibliography is reordered.
+    inline_suppressions: list = field(default_factory=list)

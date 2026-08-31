@@ -140,60 +140,48 @@ def test_unresolved_is_silent_when_no_resolution_was_attempted():
     assert findings == []
 
 
-@pytest.mark.parametrize(
-    "etype, expected",
-    [
-        # A title that fails to match is weak evidence whatever the entry type,
-        # so no title-only miss reaches "high". Titles are abbreviated in
-        # bibliographies, venues go unindexed, and books and standards are
-        # frequently absent -- across 68 real papers this branch produced 151
-        # high-severity findings from 176 title-only misses, each reading as
-        # "this reference may not exist" on the strength of a string compare.
-        ("article", "med"),
-        ("inproceedings", "med"),
-        # Types that legitimately sit outside the indices are weaker still.
-        ("phdthesis", "low"),
-        ("techreport", "low"),
-        ("misc", "low"),
-    ],
-)
-def test_a_title_only_miss_is_never_high_severity(etype, expected):
+@pytest.mark.parametrize("etype", ["article", "inproceedings", "phdthesis"])
+def test_a_title_only_miss_is_not_bib_unresolved_at_all(etype):
+    """The rule now reports dead DOIs and nothing else.
+
+    It used to report title-search misses too, at the same table: 176 of them
+    against 18 DOI findings across 68 real papers, and the 176 buried the 18.
+    That half is bib/unindexed now, off by default.
+    """
     e = entry("k", title="Some Work", entry_type=etype)
     findings = fire(
         "bib/unresolved",
         paper_with([e], {"k": Resolution(Status.NOT_FOUND, queried=("crossref",))}),
     )
-    assert findings[0].severity.value == expected
+    assert findings == []
 
 
-def test_only_a_dead_doi_reaches_high_severity():
-    """The rule's docstring always promised this; the code did not do it.
-
-    A DOI is a claim about one registered record, so its failure to resolve
-    means something specific. A title is a string that might be spelled
-    differently, and treating the two as equal evidence is what turns this
-    rule into an accusation machine.
-    """
-    resolution = {"k": Resolution(Status.NOT_FOUND, queried=("crossref",))}
-
-    with_doi = fire(
+def test_a_dead_doi_is_high_severity():
+    """A DOI is a claim about one registered record: it resolves or it does
+    not. That is the fabrication signal, and the only thing this rule reports."""
+    findings = fire(
         "bib/unresolved",
-        paper_with([entry("k", title="Work", doi="10.5555/nope")], resolution),
+        paper_with(
+            [entry("k", title="Work", doi="10.5555/nope")],
+            {"k": Resolution(Status.NOT_FOUND, queried=("crossref",))},
+        ),
     )
-    without = fire("bib/unresolved", paper_with([entry("k", title="Work")], resolution))
+    assert len(findings) == 1
+    assert findings[0].severity.value == "high"
+    assert "10.5555/nope" in findings[0].message
 
-    assert with_doi[0].severity.value == "high"
-    assert without[0].severity.value == "med"
 
-
-def test_a_failed_doi_outweighs_an_unindexable_type():
-    """A thesis claiming a registered DOI that does not resolve is different."""
+def test_a_dead_doi_on_an_unindexable_type_is_softened_not_dropped():
+    """A thesis with a DOI that does not resolve is still a dead DOI. But such
+    work is more often deposited where these indices do not reach, so the
+    claim is made more quietly rather than not at all."""
     e = entry("k", title="Work", doi="10.5555/nope", entry_type="phdthesis")
     findings = fire(
         "bib/unresolved",
         paper_with([e], {"k": Resolution(Status.NOT_FOUND, queried=("crossref",))}),
     )
-    assert findings[0].severity.value == "high"
+    assert len(findings) == 1
+    assert findings[0].severity.value == "med"
 
 
 # --- bib/metadata-drift -------------------------------------------------
@@ -220,7 +208,11 @@ def test_matching_metadata_is_silent():
     assert findings == []
 
 
-def test_wholly_different_title_is_high():
+def test_metadata_drift_no_longer_judges_titles():
+    """A title disagreeing under a resolving DOI is not drift -- it means the
+    DOI points at a different paper, which is a separate claim with different
+    evidence and a different fix. It moved to bib/doi-mismatch, where the
+    author list has to corroborate before anything is reported."""
     e = entry("k", title="Attention Is All You Need", year="2017")
     record = Record(
         source="crossref", title="Deep Residual Learning for Image Recognition", year="2017"
@@ -229,8 +221,7 @@ def test_wholly_different_title_is_high():
         "bib/metadata-drift",
         paper_with([e], {"k": Resolution(Status.FOUND, record=record)}),
     )
-    assert len(findings) == 1
-    assert findings[0].severity.value == "high"
+    assert findings == []
 
 
 @pytest.mark.parametrize(
@@ -331,3 +322,73 @@ def test_resolver_abstains_without_anything_to_search_on():
     result = HttpResolver().resolve(entry("bare"))
     assert result.status is Status.UNKNOWN
     assert "neither a DOI nor a title" in result.detail
+
+
+# --- an unreachable index is not a search -------------------------------
+
+
+def test_an_unreachable_index_is_not_counted_as_searched():
+    """The safety property of bib/unresolved: a reference is reported missing
+    only when the indices were reached and had nothing.
+
+    _get() used to return None for both "answered, no match" and "could not
+    connect", so an offline machine looked like proof that a paper does not
+    exist. Found when DBLP was added and its TLS handshake failed locally --
+    every reference then claimed four indices had been searched when three had.
+    """
+    from resint.resolve.http import HttpResolver, Unreachable
+
+    class _AllDown(HttpResolver):
+        def _crossref(self, entry):
+            raise Unreachable("crossref unreachable")
+
+        def _openalex(self, entry):
+            raise Unreachable("openalex unreachable")
+
+        def _arxiv(self, entry):
+            raise Unreachable("arxiv unreachable")
+
+        def _dblp(self, entry):
+            raise Unreachable("dblp unreachable")
+
+    result = _AllDown().resolve(entry("k", title="Some Paper"))
+    assert result.status is Status.UNKNOWN
+    assert result.queried == ()
+    assert not result.checkable, "UNKNOWN can never support a finding"
+
+
+def test_a_partly_reachable_run_names_only_what_answered():
+    """The finding's claim must be the same size as the evidence behind it."""
+    from resint.resolve.http import HttpResolver, Unreachable
+
+    class _OneDown(HttpResolver):
+        def _crossref(self, entry):
+            return None  # answered, no match
+
+        def _openalex(self, entry):
+            return None
+
+        def _arxiv(self, entry):
+            return None
+
+        def _dblp(self, entry):
+            raise Unreachable("dblp unreachable")
+
+    result = _OneDown().resolve(entry("k", title="Some Paper"))
+    assert result.status is Status.NOT_FOUND
+    assert "dblp" not in result.queried
+    assert "dblp" in result.detail
+
+
+def test_the_finding_says_when_an_index_was_not_searched():
+    """An absence claim has to name what it actually looked at."""
+    e = entry("k", title="Some Paper", doi="10.5555/nope")
+    resolution = Resolution(
+        Status.NOT_FOUND,
+        queried=("crossref", "openalex"),
+        detail="dblp could not be reached and was not searched",
+    )
+    findings = fire("bib/unresolved", paper_with([e], {"k": resolution}))
+    assert len(findings) == 1
+    assert "crossref, openalex" in findings[0].message
+    assert "dblp could not be reached" in findings[0].message

@@ -187,6 +187,20 @@ class Normalized:
                 return sec.name
         return ""
 
+    def section_bounds_at(self, index: int) -> tuple[int, int] | None:
+        """The enclosing section's range, for a search wider than one sentence.
+
+        Used when a value's own sentence does not carry what it needs -- a mean
+        without its sample size, which is nearly every mean in a real paper.
+        The section is the widest scope where "exactly one candidate" still
+        means something: a study reports its N once per group, and groups are
+        what sections separate.
+        """
+        for sec in self.sections:
+            if sec.start <= index < sec.end:
+                return sec.start, sec.end
+        return None
+
 
 class _Writer:
     __slots__ = ("chars", "offsets")

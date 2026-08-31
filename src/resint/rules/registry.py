@@ -34,6 +34,12 @@ class Rule:
     requires: tuple[str, ...]
     cannot_detect: str
     fn: RuleFn
+    #: Whether a default run includes this rule. A few checks are worth having
+    #: and not worth showing everyone: informational, or so dependent on a
+    #: field's indexing conventions that the finding is noise more often than
+    #: not. Shipping those on by default trains people to skim the report,
+    #: which costs the rules that are precise.
+    opt_in: bool = False
 
     @property
     def family(self) -> str:
@@ -249,6 +255,7 @@ def rule(
     tier: Tier | str,
     requires: Sequence[str],
     cannot_detect: str,
+    opt_in: bool = False,
     registry: Registry | None = None,
 ) -> Callable[[RuleFn], RuleFn]:
     """Declare a rule.
@@ -283,6 +290,7 @@ def rule(
                 requires=tuple(requires),
                 cannot_detect=cannot_detect.strip(),
                 fn=fn,
+                opt_in=opt_in,
             )
         )
         fn.rule_id = id  # type: ignore[attr-defined]

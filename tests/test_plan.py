@@ -21,6 +21,17 @@ PLANTED = CORPUS / "planted" / "paper.tex"
 REG = load_all()
 
 
+def _networked() -> list[str]:
+    """Every rule that needs a reference lookup, from the registry itself.
+
+    Naming them by hand is how a new networked rule slips past the offline
+    guarantee while its test still passes.
+    """
+    found = [r.id for r in REG.all() if "paper.resolutions" in r.requires]
+    assert found, "no rule needs the network; these tests would prove nothing"
+    return found
+
+
 def test_a_plan_asks_only_for_what_its_rules_declared():
     chosen = plan(REG, has_repo=False)
     assert chosen.paper_slices == required_slices(chosen.runnable) & ALL_SLICES
@@ -29,12 +40,10 @@ def test_a_plan_asks_only_for_what_its_rules_declared():
 
 def test_disabling_the_bib_rules_removes_the_network_slice():
     """This is the whole point: no bib rules, no sockets."""
-    cfg = parse_config(
-        "rules:\n"
-        "  bib/unresolved: off\n"
-        "  bib/metadata-drift: off\n"
-        "  bib/orphans: off\n"
-    )
+    # Derived from the registry, never listed by hand. A hardcoded list means
+    # a new rule that needs the network silently breaks this property while
+    # the test goes on passing -- which is exactly what bib/doi-mismatch did.
+    cfg = parse_config("rules:\n" + "".join(f"  {r}: off\n" for r in _networked()))
     chosen = plan(REG, cfg, has_repo=False)
 
     assert "paper.resolutions" not in chosen.paper_slices
@@ -111,9 +120,7 @@ def test_no_socket_is_opened_when_no_rule_needs_one():
             _Tripwire.touched = True
             raise AssertionError("a socket was opened for a run that needs none")
 
-    cfg = parse_config(
-        "rules:\n  bib/unresolved: off\n  bib/metadata-drift: off\n"
-    )
+    cfg = parse_config("rules:\n" + "".join(f"  {r}: off\n" for r in _networked()))
     chosen = plan(REG, cfg, has_repo=False)
     paper_from_path(PLANTED, needs=chosen.paper_slices, resolver=_Tripwire())
     assert not _Tripwire.touched

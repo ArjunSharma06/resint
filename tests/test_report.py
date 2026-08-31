@@ -72,7 +72,9 @@ def test_render_uses_unicode_separator_when_available():
 def test_report_names_the_tier_and_counts():
     report = run(paper_from_path(POSITIVE, resolver=RESOLVER))
     out = render(report, "planted.tex", 1.8, stream=_Stream("utf-8"))
-    assert "10 findings (3 high, 5 med, 2 low)" in out
+    # One fewer than before the bib/unresolved split: the title-only entry
+    # moved to bib/unindexed, which is off by default.
+    assert "9 findings (3 high, 5 med, 1 low)" in out
     assert "no API key used" in out
 
 

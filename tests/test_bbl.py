@@ -131,19 +131,21 @@ def paper_with(entries, resolutions):
     return p
 
 
-def test_unresolved_from_a_bbl_is_medium_not_high(parsed):
-    """A title recovered from rendered text may simply be wrong."""
+def test_a_bbl_entry_without_a_doi_belongs_to_bib_unindexed(parsed):
+    """A title recovered from rendered text may simply be wrong, and there is
+    no DOI to fall back on. That is the weak case, and it moved out of
+    bib/unresolved along with every other title-only miss."""
     entry = parsed.by_key()["chollet2016"]
-    findings = REG.get("bib/unresolved").run(
-        Context(
-            paper=paper_with(
-                [entry],
-                {"chollet2016": Resolution(Status.NOT_FOUND, queried=("crossref",))},
-            )
-        )
+    paper = paper_with(
+        [entry],
+        {"chollet2016": Resolution(Status.NOT_FOUND, queried=("crossref",))},
     )
+
+    assert REG.get("bib/unresolved").run(Context(paper=paper)) == []
+
+    findings = REG.get("bib/unindexed").run(Context(paper=paper))
     assert len(findings) == 1
-    assert findings[0].severity.value == "med"
+    assert "recovered from a compiled bibliography" in findings[0].message
     assert "may not be exact" in findings[0].message
 
 

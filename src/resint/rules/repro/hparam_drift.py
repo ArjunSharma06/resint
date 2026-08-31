@@ -68,12 +68,22 @@ def check(ctx: Context) -> Iterator:
     if not stated:
         return
 
+    # Counted so the rule can say what it looked at. A fire rate is the wrong
+    # measure for a coverage check: this rule is useful at zero findings, and
+    # "34 named, 21 located, 13 not found" tells a reader far more than silence
+    # does -- silence alone is indistinguishable from not having run.
+    located = 0
+    unlocatable: list[str] = []
+
     for number in stated:
         name = canonical(number.label)
         effective, candidates = ctx.repo.configs.effective(name)
 
         if not candidates:
+            unlocatable.append(number.label)
             continue
+
+        located += 1
 
         if effective is None:
             # Several equally strong sources disagree. Which one a run uses
@@ -128,3 +138,15 @@ def check(ctx: Context) -> Iterator:
             fix="Reconcile the reported value with the one the code uses.",
             affects=("every result produced with this setting",),
         )
+
+    # Reported however the comparison went, including when nothing differed.
+    noun = "hyperparameter" if len(stated) == 1 else "hyperparameters"
+    census = (
+        f"{len(stated)} {noun} named in the paper, "
+        f"{located} located in the repository"
+    )
+    if unlocatable:
+        shown = ", ".join(sorted(unlocatable)[:4])
+        more = "" if len(unlocatable) <= 4 else f", and {len(unlocatable) - 4} more"
+        census += f"; {len(unlocatable)} not found there ({shown}{more})"
+    ctx.abstain(census)

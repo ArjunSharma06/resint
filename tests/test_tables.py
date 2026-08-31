@@ -282,3 +282,64 @@ def test_rules_declare_their_blind_spots(rule_id):
     rule = REG.get(rule_id)
     assert len(rule.cannot_detect) > 40
     assert rule.cannot_detect.rstrip().endswith(".")
+
+
+def test_a_column_of_independent_rates_is_not_a_partition():
+    r"""Employment rate by region, prevalence by subgroup: every value sits
+    between 0 and 100 and each row has its own denominator, so the column sums
+    to whatever it sums to.
+
+    A real PMC table summed to 474.8 and was reported as "percentages of a
+    whole but sums to 474.8, not 100" -- twice. That is not a defect in the
+    paper. Being far from 100 is evidence the column was never a partition.
+    """
+    src = (
+        "\\begin{tabular}{lr}\n"
+        "  Region & Employment rate, \\% \\\\\n"
+        "  North & 78.4 \\\\\n"
+        "  South & 81.2 \\\\\n"
+        "  East & 74.9 \\\\\n"
+        "  West & 79.1 \\\\\n"
+        "\\end{tabular}\n"
+    )
+    table = tables_of(src)[0]
+    # Guard the guard: an "assert no findings" test passes trivially when the
+    # fixture never parsed into a grid, which is how this one first went green.
+    assert len(table.rows) == 5 and not table.irregular
+    assert fire("numbers/table-arithmetic", paper_with([table])) == []
+
+
+def test_a_partition_that_is_slightly_short_is_still_reported():
+    """Near 100 but not 100 is the finding worth making: a dropped category
+    or a rounding convention. That is what the band is for.
+
+    A partition missing *more* than the band is deliberately not reported. At
+    that distance it cannot be told apart from a column of independent rates
+    that happens to sum low, and guessing between them is how the 474.8 false
+    positive happened.
+    """
+    src = (
+        "\\begin{tabular}{lr}\n"
+        "  Group & Share, \\% \\\\\n"
+        "  A & 41.0 \\\\\n"
+        "  B & 33.0 \\\\\n"
+        "  C & 22.5 \\\\\n"
+        "\\end{tabular}\n"
+    )
+    findings = fire("numbers/table-arithmetic", paper_with(tables_of(src)))
+    assert len(findings) == 1
+    assert "96.5" in findings[0].message
+
+
+def test_a_partition_summing_to_a_hundred_is_silent():
+    src = (
+        "\\begin{tabular}{lr}\n"
+        "  Group & Share, \\% \\\\\n"
+        "  A & 41.0 \\\\\n"
+        "  B & 33.0 \\\\\n"
+        "  C & 26.0 \\\\\n"
+        "\\end{tabular}\n"
+    )
+    table = tables_of(src)[0]
+    assert len(table.rows) == 4 and not table.irregular
+    assert fire("numbers/table-arithmetic", paper_with([table])) == []

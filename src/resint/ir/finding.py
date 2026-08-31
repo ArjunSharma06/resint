@@ -13,6 +13,8 @@ which restores checkability without inventing a span to satisfy the rule.
 
 from __future__ import annotations
 
+import hashlib
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Sequence
@@ -24,6 +26,11 @@ _SEVERITY_ORDER = {"low": 0, "med": 1, "high": 2}
 # Bumped when the serialized shape changes. A stored sweep records this so a
 # later reader can tell whether it understands the file it is looking at.
 SCHEMA_VERSION = 1
+
+#: What varies between two findings of the same rule: numbers, DOIs, keys,
+#: file paths. Prose is excluded on purpose -- rewording a message must not
+#: orphan every baseline that referenced it.
+_SALIENT = re.compile(r"\[[^\]]+\]|\b\d+(?:[.,]\d+)?\b|\b[\w.-]+/[\w./-]+\b")
 
 
 class Severity(str, Enum):
@@ -150,6 +157,30 @@ class Finding:
             seen.append(f"{self.absent_from} (absent)")
         return " <-> ".join(seen)
 
+    def fingerprint(self) -> str:
+        """A stable identity for this finding, across edits to the paper.
+
+        Deliberately not built from line numbers. Adding a paragraph to the
+        introduction shifts every line below it, and a fingerprint that moved
+        would report the whole paper as new findings -- which is the same as
+        reporting nothing, because nobody reads a diff that is entirely noise.
+
+        Built instead from the rule and the *content* the finding is about:
+        the numbers and identifiers in its message, which is what actually
+        distinguishes one finding from another of the same kind. Two GRIM
+        violations in one paper differ by their mean; two dead DOIs differ by
+        the DOI. Both survive the paper being reformatted.
+
+        This is what makes baselining possible: record the fingerprints on a
+        paper as it stands, and a later run shows only what is genuinely new.
+        """
+        # Numbers, identifiers and bracketed keys -- the parts of a message
+        # that vary between findings. Prose is dropped: rewording a message
+        # should not orphan everyone's baseline.
+        salient = " ".join(_SALIENT.findall(self.message))
+        material = f"{self.rule_id}|{salient}"
+        return hashlib.sha256(material.encode("utf-8")).hexdigest()[:12]
+
     def suppress(self, reason: str) -> "Finding":
         """Return a suppressed copy.
 
@@ -176,6 +207,7 @@ class Finding:
         return {
             "schema": SCHEMA_VERSION,
             "rule": self.rule_id,
+            "fingerprint": self.fingerprint(),
             "severity": self.severity.value,
             "tier": self.tier.value,
             "message": self.message,

@@ -38,9 +38,14 @@ class PResult:
         return self.verdict in ("inconsistent", "decision")
 
 
-def recompute(test: StatTest) -> float | None:
-    """The p-value implied by the reported statistic, or None if unsupported."""
-    s, df1, df2 = test.statistic, test.df1, test.df2
+def recompute(test: StatTest, statistic: float | None = None) -> float | None:
+    """The p-value implied by a statistic, or None if unsupported.
+
+    ``statistic`` overrides the reported value so the same arithmetic can be
+    run at both ends of the interval the paper's rounding actually claims.
+    """
+    s = test.statistic if statistic is None else statistic
+    df1, df2 = test.df1, test.df2
 
     if test.kind == "t":
         if df1 is None or df1 <= 0:
@@ -81,6 +86,40 @@ def _rounds_to(computed: float, reported: Decimal, decimals: int) -> bool:
     )
 
 
+def statistic_interval(test: StatTest) -> tuple[float, float]:
+    """The range of statistics consistent with what the paper printed.
+
+    ``t = 2.086`` does not mean 2.086 exactly; it means the author had a value
+    that rounds to 2.086, so t lies in [2.0855, 2.0865). Reporting a
+    disagreement computed from the midpoint alone turns the author's rounding
+    into a finding, which is the largest false-positive source in this whole
+    family of checks.
+    """
+    half = 0.5 * (10.0 ** -test.statistic_decimals)
+    magnitude = abs(test.statistic)
+    return max(magnitude - half, 0.0), magnitude + half
+
+
+def computed_interval(test: StatTest) -> tuple[float, float] | None:
+    """Every p the reported statistic could imply, smallest first.
+
+    p falls as the statistic grows for every test here, so the interval's ends
+    come from the interval's ends -- the larger statistic gives the smaller p.
+    """
+    low_stat, high_stat = statistic_interval(test)
+    p_high = recompute(test, low_stat)
+    p_low = recompute(test, high_stat)
+    if p_low is None or p_high is None:
+        return None
+    return min(p_low, p_high), max(p_low, p_high)
+
+
+def reported_interval(reported: Decimal, decimals: int) -> tuple[float, float]:
+    """The range of p-values that round to what the paper printed."""
+    half = Decimal(5).scaleb(-(decimals + 1))
+    return float(reported - half), float(reported + half)
+
+
 def _significant(value: float, comparator: str, bound: float) -> bool:
     """Whether a reported p implies significance at ALPHA."""
     if comparator == "<":
@@ -95,22 +134,42 @@ def evaluate(test: StatTest) -> PResult:
     if computed is None:
         return PResult("unsupported", reason=f"cannot recompute p for {test.kind}")
 
+    span = computed_interval(test)
+    if span is None:
+        return PResult("unsupported", reason=f"cannot recompute p for {test.kind}")
+    p_low, p_high = span
+
     reported = test.p_exact
     bound = float(reported)
 
+    # Both sides are intervals: the statistic's precision bounds what p can
+    # be, and the reported p's precision bounds what was claimed. A finding
+    # requires those two ranges not to overlap at all -- anything less is the
+    # author's rounding, not their error.
     if test.p_comparator == "<":
-        consistent = computed < bound
+        consistent = p_low < bound
     elif test.p_comparator == ">":
-        consistent = computed > bound
+        consistent = p_high > bound
     else:
-        consistent = _rounds_to(computed, reported, test.p_decimals)
+        claim_low, claim_high = reported_interval(reported, test.p_decimals)
+        consistent = p_low <= claim_high and p_high >= claim_low
 
     if consistent:
         return PResult("consistent", computed=computed)
 
     reported_sig = _significant(bound, test.p_comparator, bound)
-    computed_sig = computed < ALPHA
-    verdict: Verdict = "decision" if reported_sig != computed_sig else "inconsistent"
+
+    # A decision error means the recomputed result lands on the other side of
+    # the threshold the paper argues from. When the interval straddles alpha
+    # the recomputation does not establish a side, so it stays "inconsistent"
+    # rather than claiming a conclusion changed.
+    straddles = p_low < ALPHA <= p_high
+    computed_sig = p_high < ALPHA
+    verdict: Verdict = (
+        "decision"
+        if not straddles and reported_sig != computed_sig
+        else "inconsistent"
+    )
     return PResult(verdict, computed=computed)
 
 
@@ -130,8 +189,15 @@ def _fmt(p: float) -> str:
     ),
 )
 def check(ctx: Context) -> Iterator:
+    checked = 0
+    unsupported = 0
+
     for test in ctx.paper.stats:
         result = evaluate(test)
+        if result.verdict == "unsupported":
+            unsupported += 1
+            continue
+        checked += 1
         if not result.flagged:
             continue
 
@@ -161,3 +227,14 @@ def check(ctx: Context) -> Iterator:
                 anchors=[test.span, test.p_span],
                 fix="Recheck the statistic, the degrees of freedom, and the reported p.",
             )
+
+    # Reported whether or not anything disagreed. A rule that finds nothing and
+    # says nothing is indistinguishable from a rule that did not run, and this
+    # one legitimately finds nothing on most papers.
+    found = len(ctx.paper.stats)
+    if found:
+        noun = "test statistic" if found == 1 else "test statistics"
+        census = f"{found} {noun} found, {checked} recomputed"
+        if unsupported:
+            census += f", {unsupported} of a kind this rule cannot recompute"
+        ctx.abstain(census)

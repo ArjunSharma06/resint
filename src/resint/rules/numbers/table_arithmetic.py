@@ -23,6 +23,20 @@ from ..registry import Context, rule
 _TOTAL_WORDS = frozenset({"total", "sum", "overall", "all", "combined", "aggregate"})
 _PERCENT_WORDS = frozenset({"%", "percent", "percentage", "share", "proportion"})
 
+#: How far from 100 a column may sum and still be a partition that is *wrong*
+#: rather than a column that was never a partition at all.
+#:
+#: A column of independent rates -- employment rate by region, prevalence by
+#: subgroup -- has every value between 0 and 100 and sums to whatever it sums
+#: to. One real table summed to 474.8 and was reported as "percentages of a
+#: whole but sums to 474.8, not 100", which is not a defect in the paper: each
+#: row is its own denominator.
+#:
+#: Being far from 100 is evidence the column is not parts-of-a-whole. Being
+#: near but not equal is evidence of a missing category or a rounding
+#: convention, which is the finding worth making.
+NEAR_WHOLE = Decimal(5)
+
 
 def tolerance(cells) -> Decimal:
     """Half a unit in the last place the paper actually reported."""
@@ -43,7 +57,11 @@ def _is_total_row(row) -> bool:
         "Tables whose cell structure did not survive extraction; those are "
         "skipped and reported as unchecked rather than guessed at. Also "
         "totals over a subset of rows, where the paper sums some entries and "
-        "not others without saying so."
+        "not others without saying so. A percentage column missing more than "
+        "a few points is not reported either: at that distance a partition "
+        "with a dropped category cannot be told apart from a column of "
+        "independent rates, each row having its own denominator, and "
+        "guessing between them produces confident nonsense."
     ),
 )
 def check(ctx: Context) -> Iterator:
@@ -92,7 +110,7 @@ def check(ctx: Context) -> Iterator:
                 ]
                 summed = sum((c.number for c in parts), Decimal(0))
                 slack = tolerance(parts)
-                if parts and abs(summed - Decimal(100)) > slack:
+                if parts and slack < abs(summed - Decimal(100)) <= NEAR_WHOLE:
                     yield ctx.finding(
                         severity="low",
                         message=(

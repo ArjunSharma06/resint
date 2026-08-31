@@ -57,6 +57,9 @@ class Suppression:
 class Config:
     suppressions: list[Suppression] = field(default_factory=list)
     disabled: set[str] = field(default_factory=set)
+    #: Rules the file switched on. Opt-in rules stay off unless named here,
+    #: so "rules: bib/unindexed: on" is the only way to see them.
+    enabled_explicitly: set[str] = field(default_factory=set)
     path: Path | None = None
     # provider/name/base_url for the model tier. Never a key: this file is
     # committed alongside the paper, and a key in it is a key on GitHub.
@@ -163,6 +166,8 @@ def parse(text: str, path: Path | None = None) -> Config:
                 state = _unquote(nested.group("value")).lower()
                 if state in ("off", "false", "no", "disabled"):
                     config.disabled.add(nested.group("key"))
+                elif state in ("on", "true", "yes", "enabled"):
+                    config.enabled_explicitly.add(nested.group("key"))
             continue
 
     for index, entry in enumerate(raw_suppressions, 1):

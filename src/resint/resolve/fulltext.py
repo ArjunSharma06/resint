@@ -41,7 +41,7 @@ from pathlib import Path
 from typing import Protocol
 
 from ..ir.paper import BibEntry
-from .base import Record, Status
+from .base import Record, Status, Unreachable
 from .http import USER_AGENT, Pacer
 
 EPRINT = "https://arxiv.org/e-print/{}"
@@ -336,15 +336,33 @@ class HttpFullText:
         return USER_AGENT + (" mailto:" + self.mailto if self.mailto else "")
 
     def _get(self, url: str, index: str) -> bytes | None:
+        """The body, or None when the server answered that there is none.
+
+        Raises :class:`Unreachable` when we could not ask. The distinction is
+        the same one ``resolve/http.py`` learned the hard way: returning None
+        for both makes an offline machine indistinguishable from a paper that
+        genuinely has no open-access version, and every rule downstream then
+        reasons about a fact that was never established.
+
+        Here the collapse ran the safe way -- everything became UNKNOWN, so
+        nothing was over-claimed -- but a real 404 was reported as "we could
+        not check" forever, which is its own kind of wrong.
+        """
         self._paced().wait(index)
         request = urllib.request.Request(url, headers={"User-Agent": self._agent()})
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                if response.status != 200:
+                if response.status == 404:
                     return None
+                if response.status != 200:
+                    raise Unreachable(f"{index} answered {response.status}")
                 return response.read()
-        except (urllib.error.URLError, TimeoutError, ValueError, OSError):
-            return None
+        except urllib.error.HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise Unreachable(f"{index} answered {exc.code}") from exc
+        except (urllib.error.URLError, TimeoutError, ValueError, OSError) as exc:
+            raise Unreachable(f"{index} unreachable: {exc}") from exc
 
     def fetch(self, entry: BibEntry, record: Record | None = None) -> Fetched:
         arxiv_id = arxiv_id_for(entry, record)
@@ -360,9 +378,16 @@ class HttpFullText:
         )
 
     def _arxiv(self, arxiv_id: str) -> Fetched:
-        body = self._get(EPRINT.format(arxiv_id), "arxiv-eprint")
+        try:
+            body = self._get(EPRINT.format(arxiv_id), "arxiv-eprint")
+        except Unreachable as exc:
+            return Fetched(Status.UNKNOWN, queried=(arxiv_id,), detail=str(exc))
         if body is None:
-            return Fetched(Status.UNKNOWN, queried=(arxiv_id,), detail="fetch failed")
+            return Fetched(
+                Status.NOT_FOUND,
+                queried=(arxiv_id,),
+                detail="arXiv has no e-print under this identifier",
+            )
 
         # arXiv serves the PDF when a submission has no source. That is a
         # settled fact about the paper, not a transient failure, so it is
@@ -399,9 +424,16 @@ class HttpFullText:
         params = {"db": "pmc", "id": pmcid, "retmode": "xml", "tool": "resint"}
         if self.mailto:
             params["email"] = self.mailto
-        body = self._get(EFETCH + "?" + urllib.parse.urlencode(params), "pmc")
+        try:
+            body = self._get(EFETCH + "?" + urllib.parse.urlencode(params), "pmc")
+        except Unreachable as exc:
+            return Fetched(Status.UNKNOWN, queried=(pmcid,), detail=str(exc))
         if body is None:
-            return Fetched(Status.UNKNOWN, queried=(pmcid,), detail="fetch failed")
+            return Fetched(
+                Status.NOT_FOUND,
+                queried=(pmcid,),
+                detail="PubMed Central has no record under this identifier",
+            )
 
         raw = body.decode("utf-8", "replace")
         text = jats_to_text(raw)[:MAX_TEXT_CHARS]

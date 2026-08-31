@@ -109,9 +109,22 @@ def plan(
     settings = config or Config()
 
     candidates = [r for r in reg.all() if settings.enabled(r.id)]
+
+    # Opt-in rules stay out unless the config names them. They are skipped
+    # visibly, like everything else: a rule that silently did not run is
+    # indistinguishable from one that ran and found nothing, which is the
+    # confusion this whole tool exists to avoid.
+    opted_out = [
+        r for r in candidates
+        if r.opt_in and r.id not in settings.enabled_explicitly
+    ]
+    candidates = [r for r in candidates if r not in opted_out]
     runnable, skipped = selectable(
         candidates, has_repo=has_repo, has_provider=has_provider
     )
+    for rule in sorted(opted_out, key=lambda r: r.id):
+        skipped[rule.id] = "off by default; switch on in .resint.yml to use it"
+
     for disabled in sorted(settings.disabled):
         if disabled in reg:
             skipped[disabled] = "disabled in .resint.yml"
@@ -155,6 +168,16 @@ def run(
     # therefore never hide a regression from the corpus.
     report.findings, notes = settings.apply(report.findings)
     report.notes.extend(notes)
+
+    # Inline directives, after the config file. A judgement written beside the
+    # line it excuses is the most specific statement available about that
+    # finding, so it is applied last and wins.
+    inline = getattr(paper, "inline_suppressions", None) or ()
+    if inline:
+        from .parse.inline import apply_inline
+
+        report.findings, inline_notes = apply_inline(report.findings, inline)
+        report.notes.extend(inline_notes)
 
     if min_severity is not None:
         floor = _SEVERITY_RANK[min_severity]

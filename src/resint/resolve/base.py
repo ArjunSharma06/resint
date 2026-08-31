@@ -28,6 +28,28 @@ from typing import Protocol
 from ..ir.paper import BibEntry
 
 
+class Unreachable(Exception):
+    """The index could not be contacted at all.
+
+    Distinct from a search that ran and returned nothing, and the distinction
+    is the whole safety property of ``bib/unresolved``: a reference is reported
+    as missing only when the indices were actually reached and actually had
+    nothing. Returning None for both makes an offline machine look like proof
+    that a paper does not exist.
+
+    Found when DBLP was added and its TLS handshake failed on the development
+    machine: every reference then claimed four indices had been searched when
+    three had. A second instance turned up in ``resolve/fulltext.py``, running
+    the safe way -- everything collapsed to UNKNOWN, so nothing was
+    over-claimed, but a paper genuinely absent from arXiv was reported as
+    "could not check" forever.
+
+    Lives beside :class:`Status` because it is the transport-level half of the
+    same three-outcome contract, and because every module that raises it also
+    imports Status.
+    """
+
+
 class Status(str, Enum):
     FOUND = "found"
     NOT_FOUND = "not-found"
