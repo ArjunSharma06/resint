@@ -2,6 +2,7 @@
 
     python tools/fetch_arxiv.py --count 100 --mailto you@example.org
     python tools/fetch_arxiv.py --count 40 --categories q-bio.QM,stat.AP
+    python tools/fetch_arxiv.py --ids notes/corpus-2026-09.txt
 
 Serial, six seconds apart, cached by arXiv id. Two hundred and fifty papers
 takes about twenty-five minutes, once — after that every sweep runs offline at
@@ -15,6 +16,11 @@ Default categories deliberately span fields. Three rules — stats/grim,
 stats/pvalue-mismatch, stats/significance-unsupported — only fire on papers
 reporting statistical tests, which machine-learning papers largely do not, so
 an all-cs corpus would leave them untested on real input.
+
+``--ids`` takes a file of identifiers and skips discovery entirely. Discovery
+lists whatever the service has today, so a corpus built that way cannot be
+rebuilt and two sweeps a week apart are not comparable; an id list makes the
+corpus reproducible and lets its composition be chosen rather than accepted.
 
 Licence: arXiv's default terms do not permit redistribution. The cache is
 gitignored and must stay that way. Fixtures distilled from these papers must
@@ -145,9 +151,36 @@ def fetch_one(arxiv_id: str, cache: Path, mailto: str | None) -> Fetched:
     return Fetched(arxiv_id, target, cached=False, bytes=len(body))
 
 
+def read_ids(path: Path) -> list[str]:
+    """Identifiers from a file, one per line.
+
+    Discovery returns whatever the service currently lists, so a corpus built
+    that way cannot be rebuilt -- the same command a week later fetches
+    different papers, and a sweep can never be re-run against the material it
+    actually measured. A committed id list fixes that, and turns a corpus into
+    something composed on purpose rather than accepted as it arrives.
+
+    Blank lines and #-comments are skipped so the file can say what each block
+    is for, and duplicates are dropped so lists can be concatenated.
+    """
+    ids: list[str] = []
+    seen: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        entry = line.split("#", 1)[0].strip()
+        if entry and entry not in seen:
+            seen.add(entry)
+            ids.append(entry)
+    return ids
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--count", type=int, default=100)
+    parser.add_argument(
+        "--ids",
+        default=None,
+        help="file of identifiers, one per line; skips discovery entirely",
+    )
     parser.add_argument("--categories", default=",".join(DEFAULT_CATEGORIES))
     parser.add_argument("--cache", default=str(DEFAULT_CACHE))
     parser.add_argument(
@@ -159,12 +192,20 @@ def main(argv=None) -> int:
     cache = Path(args.cache)
     cache.mkdir(parents=True, exist_ok=True)
 
-    categories = [c.strip() for c in args.categories.split(",") if c.strip()]
-    per_category = max(1, args.count // len(categories))
+    if args.ids:
+        source = Path(args.ids)
+        if not source.is_file():
+            print(f"fetch_arxiv: no such id file: {source}", file=sys.stderr)
+            return 2
+        ids = read_ids(source)
+        print(f"{len(ids)} ids from {source} -- discovery skipped")
+    else:
+        categories = [c.strip() for c in args.categories.split(",") if c.strip()]
+        per_category = max(1, args.count // len(categories))
 
-    print(f"listing {args.count} papers across {len(categories)} categories")
-    ids = list_ids(categories, per_category, args.mailto)[: args.count]
-    print(f"\n{len(ids)} ids")
+        print(f"listing {args.count} papers across {len(categories)} categories")
+        ids = list_ids(categories, per_category, args.mailto)[: args.count]
+        print(f"\n{len(ids)} ids")
 
     if args.list_only:
         for i in ids:

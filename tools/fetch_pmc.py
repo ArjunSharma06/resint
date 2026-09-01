@@ -20,6 +20,11 @@ genuinely differ: arXiv publishes a courtesy interval and serves whole source
 bundles, while these are single XML documents from an endpoint built for
 bulk programmatic access.
 
+``--ids`` takes a file of identifiers and skips discovery entirely. Discovery
+lists whatever the service has today, so a corpus built that way cannot be
+rebuilt and two sweeps a week apart are not comparable; an id list makes the
+corpus reproducible and lets its composition be chosen rather than accepted.
+
 **Licence.** The open-access subset permits redistribution, unlike arXiv's
 default terms -- but individual articles carry their own licences (CC-BY,
 CC-BY-NC, occasionally more restrictive). The cache is gitignored and stays
@@ -166,9 +171,36 @@ def fetch_one(pmcid: str, cache: Path, mailto: str | None) -> Fetched:
     return Fetched(pmcid, target, cached=False, bytes=len(body))
 
 
+def read_ids(path: Path) -> list[str]:
+    """Identifiers from a file, one per line.
+
+    Discovery returns whatever the service currently lists, so a corpus built
+    that way cannot be rebuilt -- the same command a week later fetches
+    different papers, and a sweep can never be re-run against the material it
+    actually measured. A committed id list fixes that, and turns a corpus into
+    something composed on purpose rather than accepted as it arrives.
+
+    Blank lines and #-comments are skipped so the file can say what each block
+    is for, and duplicates are dropped so lists can be concatenated.
+    """
+    ids: list[str] = []
+    seen: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        entry = line.split("#", 1)[0].strip()
+        if entry and entry not in seen:
+            seen.add(entry)
+            ids.append(entry)
+    return ids
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--count", type=int, default=150)
+    parser.add_argument(
+        "--ids",
+        default=None,
+        help="file of identifiers, one per line; skips discovery entirely",
+    )
     parser.add_argument("--topics", default=",".join(TOPICS))
     parser.add_argument("--cache", default=str(DEFAULT_CACHE))
     parser.add_argument(
@@ -180,12 +212,20 @@ def main(argv=None) -> int:
     cache = Path(args.cache)
     cache.mkdir(parents=True, exist_ok=True)
 
-    topics = [t.strip() for t in args.topics.split(",") if t.strip()]
-    per_topic = max(1, args.count // max(len(topics), 1))
+    if args.ids:
+        source = Path(args.ids)
+        if not source.is_file():
+            print(f"fetch_pmc: no such id file: {source}", file=sys.stderr)
+            return 2
+        ids = read_ids(source)
+        print(f"{len(ids)} ids from {source} -- discovery skipped")
+    else:
+        topics = [t.strip() for t in args.topics.split(",") if t.strip()]
+        per_topic = max(1, args.count // max(len(topics), 1))
 
-    print(f"listing {args.count} articles across {len(topics)} topics")
-    ids = list_ids(topics, per_topic, args.mailto)[: args.count]
-    print(f"\n{len(ids)} ids")
+        print(f"listing {args.count} articles across {len(topics)} topics")
+        ids = list_ids(topics, per_topic, args.mailto)[: args.count]
+        print(f"\n{len(ids)} ids")
 
     if args.list_only:
         for i in ids:
