@@ -14,6 +14,7 @@ from resint.resolve import (
     CachingResolver,
     NullResolver,
     Record,
+    Registration,
     Resolution,
     StaticResolver,
     Status,
@@ -102,11 +103,18 @@ def test_caching_falls_back_to_title_and_year():
 # --- bib/unresolved -----------------------------------------------------
 
 
+def _dead(queried=("crossref", "doi.org")):
+    """A DOI the DOI system itself denies. The only thing that may fire."""
+    return Resolution(
+        Status.NOT_FOUND, queried=queried, registration=Registration.DEAD
+    )
+
+
 def test_unresolved_fires_on_a_not_found_article():
     e = entry("ghost", title="A Paper That Does Not Exist", doi="10.5555/nope")
     findings = fire(
         "bib/unresolved",
-        paper_with([e], {"ghost": Resolution(Status.NOT_FOUND, queried=("crossref",))}),
+        paper_with([e], {"ghost": _dead()}),
     )
     assert len(findings) == 1
     assert findings[0].severity.value == "high"
@@ -151,7 +159,7 @@ def test_a_title_only_miss_is_not_bib_unresolved_at_all(etype):
     e = entry("k", title="Some Work", entry_type=etype)
     findings = fire(
         "bib/unresolved",
-        paper_with([e], {"k": Resolution(Status.NOT_FOUND, queried=("crossref",))}),
+        paper_with([e], {"k": _dead()}),
     )
     assert findings == []
 
@@ -163,7 +171,7 @@ def test_a_dead_doi_is_high_severity():
         "bib/unresolved",
         paper_with(
             [entry("k", title="Work", doi="10.5555/nope")],
-            {"k": Resolution(Status.NOT_FOUND, queried=("crossref",))},
+            {"k": _dead()},
         ),
     )
     assert len(findings) == 1
@@ -178,7 +186,7 @@ def test_a_dead_doi_on_an_unindexable_type_is_softened_not_dropped():
     e = entry("k", title="Work", doi="10.5555/nope", entry_type="phdthesis")
     findings = fire(
         "bib/unresolved",
-        paper_with([e], {"k": Resolution(Status.NOT_FOUND, queried=("crossref",))}),
+        paper_with([e], {"k": _dead()}),
     )
     assert len(findings) == 1
     assert findings[0].severity.value == "med"
@@ -380,15 +388,258 @@ def test_a_partly_reachable_run_names_only_what_answered():
     assert "dblp" in result.detail
 
 
-def test_the_finding_says_when_an_index_was_not_searched():
-    """An absence claim has to name what it actually looked at."""
+def test_an_index_being_down_no_longer_blocks_a_finding():
+    """The claim used to be "no index has this", which an unsearched index
+    left a hole in. It is now "the DOI system has no such handle", which one
+    authority answers alone -- DBLP being down cannot make a registered DOI
+    look unregistered. Eight of nine findings on batch-1c carried that caveat
+    while DBLP was down for the whole sweep."""
     e = entry("k", title="Some Paper", doi="10.5555/nope")
     resolution = Resolution(
         Status.NOT_FOUND,
-        queried=("crossref", "openalex"),
+        queried=("crossref", "openalex", "doi.org"),
+        registration=Registration.DEAD,
         detail="dblp could not be reached and was not searched",
     )
     findings = fire("bib/unresolved", paper_with([e], {"k": resolution}))
     assert len(findings) == 1
-    assert "crossref, openalex" in findings[0].message
-    assert "dblp could not be reached" in findings[0].message
+    assert "10.5555/nope" in findings[0].message
+
+
+def test_a_live_doi_outside_our_indices_is_never_a_finding():
+    """The bias this rule shipped with. Two of nine findings on batch-1c were
+    DOIs registered through the Chinese agency, resolving via chndoi.org and
+    unknown to all four indices -- reported at high severity as fabrication.
+    A tool that does this fires on papers citing Chinese-language work."""
+    e = entry("k", title="Real Chinese Paper", doi="10.16718/j.1009-7708.2025.06.002")
+    resolution = Resolution(
+        Status.NOT_FOUND,
+        queried=("crossref", "openalex", "arxiv", "dblp", "doi.org"),
+        registration=Registration.REGISTERED,
+        agency="Chinese Academy of Sciences",
+    )
+    findings = fire("bib/unresolved", paper_with([e], {"k": resolution}))
+    assert findings == []
+
+
+def test_a_doi_org_that_could_not_be_reached_is_never_a_finding():
+    """Absence of an answer is not an answer. The indices missing it and the
+    authority being unreachable is exactly the UNCHECKED case."""
+    e = entry("k", title="Some Paper", doi="10.5555/maybe")
+    resolution = Resolution(
+        Status.NOT_FOUND,
+        queried=("crossref",),
+        registration=Registration.UNCHECKED,
+    )
+    findings = fire("bib/unresolved", paper_with([e], {"k": resolution}))
+    assert findings == []
+
+
+# =========================================================================
+# The DOI system as authority: the paths that must never fire
+#
+# bib/unresolved fires on one thing only -- doi.org denying a handle. Every
+# other outcome of that lookup has to stay silent, and the ways it can fail
+# are exactly the ways the original bug could come back.
+# =========================================================================
+
+
+class _Answer:
+    """A urlopen result: context manager, status, body, final URL."""
+
+    def __init__(self, body=b"", status=200, url="https://example.org/landing"):
+        self._body, self.status, self.url = body, status, url
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self._body
+
+
+def _resolver(recorder=None):
+    from resint.resolve.http import HttpResolver
+
+    return HttpResolver(pacer=recorder or _Waits())
+
+
+class _Waits:
+    """A Pacer that records rather than sleeps."""
+
+    def __init__(self):
+        self.seen = []
+
+    def wait(self, index):
+        self.seen.append(index)
+
+
+@pytest.mark.parametrize("code", [429, 500, 502, 503])
+def test_a_throttled_doi_org_is_never_read_as_unregistered(monkeypatch, code):
+    """The bug's worst possible return. A 429 read as "no such DOI" would
+    fire on precisely the bibliographies with many non-Crossref references --
+    the population we just stopped accusing -- and it would look like a
+    finding rather than an outage."""
+    import urllib.error
+    import urllib.request
+
+    def throttled(request, timeout=None):
+        raise urllib.error.HTTPError(
+            request.full_url, code, "throttled", {}, None
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", throttled)
+    registration, agency, record = _resolver()._doi_org("10.5555/x")
+
+    assert registration is Registration.UNCHECKED
+    assert record is None
+    # And UNCHECKED cannot reach a finding, whatever else is true.
+    e = entry("k", title="A Paper", doi="10.5555/x")
+    resolution = Resolution(
+        Status.NOT_FOUND, queried=("crossref",), registration=registration
+    )
+    assert fire("bib/unresolved", paper_with([e], {"k": resolution})) == []
+
+
+def test_only_a_404_from_doi_org_means_unregistered(monkeypatch):
+    """404 is the one status that answers the question asked."""
+    import urllib.error
+    import urllib.request
+
+    def missing(request, timeout=None):
+        raise urllib.error.HTTPError(request.full_url, 404, "no", {}, None)
+
+    monkeypatch.setattr(urllib.request, "urlopen", missing)
+    assert _resolver()._doi_org("10.5555/x")[0] is Registration.DEAD
+
+
+def test_both_doi_org_calls_are_paced(monkeypatch):
+    """Two requests per miss -- the record and the agency -- and a
+    bibliography heavy in non-Crossref agencies makes that the common path,
+    not the rare one."""
+    import urllib.request
+
+    monkeypatch.setattr(
+        urllib.request,
+        "urlopen",
+        lambda request, timeout=None: _Answer(b'{"title": "T", "DOI": "10.5/x"}'),
+    )
+    waits = _Waits()
+    _resolver(waits)._doi_org("10.5/x")
+    assert waits.seen == ["doi.org", "doi.org"]
+
+
+def test_a_live_doi_is_still_reported_when_the_agency_lookup_fails():
+    """doiRA failing must not swallow the coverage gap. The abstention is the
+    only place our blind spots are visible, and it matters more than the name
+    of the agency behind them."""
+    from resint.rules.registry import Context
+
+    e = entry("k", title="A Paper", doi="10.16718/j.x")
+    paper = paper_with(
+        [e],
+        {"k": Resolution(
+            Status.NOT_FOUND,
+            queried=("crossref", "doi.org"),
+            registration=Registration.REGISTERED,
+            agency="",          # doiRA did not answer
+        )},
+    )
+    ctx = Context(paper=paper, rule=load_all().get("bib/unresolved"))
+    findings = list(load_all().get("bib/unresolved").fn(ctx))
+
+    assert findings == []
+    assert any("registered and resolves" in a for a in ctx.abstentions)
+
+
+def test_the_agency_falls_back_to_whoever_answered(monkeypatch):
+    """A worse name, but a true one."""
+    import urllib.error
+    import urllib.request
+
+    def only_the_landing_page(request, timeout=None):
+        if "doiRA" in request.full_url:
+            raise urllib.error.HTTPError(request.full_url, 503, "down", {}, None)
+        return _Answer(b"<html>not JSON</html>",
+                       url="https://www.chndoi.org/Resolution/Handler?doi=10.16718/x")
+
+    monkeypatch.setattr(urllib.request, "urlopen", only_the_landing_page)
+    registration, agency, record = _resolver()._doi_org("10.16718/x")
+
+    # An unparseable body is still proof the handle resolved.
+    assert registration is Registration.REGISTERED
+    assert record is None
+    assert agency == "chndoi.org"
+
+
+def test_with_no_resolver_the_authority_path_never_engages():
+    """The default, and --offline. Everything UNKNOWN, nothing fires, and the
+    census says the lookups did not happen rather than staying silent."""
+    from resint.rules.registry import Context
+
+    e = entry("k", title="A Paper", doi="10.5555/x")
+    resolution = NullResolver().resolve(e)
+    assert resolution.status is Status.UNKNOWN
+    assert resolution.registration is Registration.UNCHECKED
+
+    paper = paper_with([e], {"k": resolution})
+    ctx = Context(paper=paper, rule=load_all().get("bib/unresolved"))
+    findings = list(load_all().get("bib/unresolved").fn(ctx))
+
+    assert findings == []
+    census = [a for a in ctx.abstentions if "reference" in a]
+    assert census and "0 looked up" in census[0]
+    assert "could not be looked up and were not judged" in census[0]
+
+
+def test_the_agency_is_looked_up_once_per_prefix(monkeypatch):
+    """The agency is a property of the DOI prefix, so a bibliography with
+    forty Chinese-registered references asks once. Without this the slowest
+    path in the resolver runs on exactly the papers it was added to stop
+    accusing."""
+    import urllib.request
+
+    calls = []
+
+    def answer(request, timeout=None):
+        calls.append(request.full_url)
+        if "doiRA" in request.full_url:
+            return _Answer(b'[{"DOI": "x", "RA": "Chinese Academy of Sciences"}]')
+        return _Answer(b"<html>landing</html>", url="https://chndoi.org/x")
+
+    monkeypatch.setattr(urllib.request, "urlopen", answer)
+    resolver = _resolver()
+
+    first = resolver._doi_org("10.16718/j.1")
+    second = resolver._doi_org("10.16718/j.2")
+    other = resolver._doi_org("10.13604/j.3")
+
+    assert first[1] == second[1] == "Chinese Academy of Sciences"
+    # Three handle lookups, but only two agency lookups: one per prefix.
+    assert sum("doiRA" in c for c in calls) == 2
+    assert other[1] == "Chinese Academy of Sciences"
+
+
+def test_a_failed_agency_lookup_is_not_cached(monkeypatch):
+    """doiRA being down for one reference must not blank the agency for the
+    rest of the bibliography."""
+    import urllib.error
+    import urllib.request
+
+    state = {"fail": True}
+
+    def flaky(request, timeout=None):
+        if "doiRA" in request.full_url:
+            if state["fail"]:
+                state["fail"] = False
+                raise urllib.error.HTTPError(request.full_url, 503, "down", {}, None)
+            return _Answer(b'[{"RA": "JaLC"}]')
+        return _Answer(b"<html>landing</html>", url="https://jalc.jst.go.jp/x")
+
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    resolver = _resolver()
+
+    assert resolver._doi_org("10.5555/a")[1] == "jalc.jst.go.jp"  # fallback
+    assert resolver._doi_org("10.5555/b")[1] == "JaLC"            # retried

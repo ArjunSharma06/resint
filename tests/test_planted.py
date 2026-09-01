@@ -21,12 +21,13 @@ from resint.ir.repo import ConfigKey, ConfigSet, Dependency, Link, Repo, SeedCal
 from resint.ir.span import Source, Span
 from resint.model.base import Completion, Outcome
 from resint.parse.document import paper_from_latex
-from resint.resolve import Record, Resolution, Status
+from resint.resolve import Registration, Record, Resolution, Status
 from resint.rules import load_all
 from resint.rules.registry import Context
 
 REG = load_all()
 RSRC = Source("train.py", "python", path="train.py")
+
 
 
 def _span(path="train.py", line=1):
@@ -146,10 +147,56 @@ def test_bib_unresolved():
     e = _entry("ghost2020", title="A Paper", doi="10.5555/nope", year="2020")
     findings = run_rule(
         "bib/unresolved",
-        _bib_paper([e], {"ghost2020": Resolution(Status.NOT_FOUND, queried=("crossref",))}),
+        _bib_paper([e], {"ghost2020": _dead()}),
     )
     assert len(findings) == 1
     assert findings[0].severity.value == "high"
+
+
+def test_bib_unresolved_clears_a_live_doi_our_indices_cannot_see():
+    """The planted *negative*, and the more valuable of the pair.
+
+    A DOI registered outside Crossref -- through the Chinese agency, JaLC,
+    KISTI -- resolves perfectly well and is invisible to all four of our
+    indices. Until 2026-09-01 this rule reported exactly that as fabrication,
+    at high severity, which made it fire on papers citing Chinese-language
+    literature. A known-positive cannot catch a bias; only a known-negative
+    that must stay silent can, which is why this fixture is permanent.
+    """
+    e = _entry(
+        "chinese2025",
+        title="2024 CHINET Surveillance of Bacterial Resistance in China",
+        doi="10.16718/j.1009-7708.2025.06.002",
+        year="2025",
+    )
+    resolution = Resolution(
+        Status.NOT_FOUND,
+        queried=("crossref", "openalex", "arxiv", "dblp", "doi.org"),
+        registration=Registration.REGISTERED,
+        agency="Chinese Academy of Sciences",
+    )
+    assert run_rule("bib/unresolved", _bib_paper([e], {"chinese2025": resolution})) == []
+
+
+def test_bib_unresolved_names_the_coverage_gap_it_hit():
+    """Silence about a live DOI we could not read would hide the blind spot.
+    The gaps are not random -- they fall on whole literatures -- so the rule
+    says which agency it could not follow."""
+    from resint.rules.registry import Context
+
+    e = _entry("chinese2025", title="A Paper", doi="10.16718/j.x", year="2025")
+    paper = _bib_paper(
+        [e],
+        {"chinese2025": Resolution(
+            Status.NOT_FOUND,
+            queried=("crossref", "doi.org"),
+            registration=Registration.REGISTERED,
+            agency="Chinese Academy of Sciences",
+        )},
+    )
+    ctx = Context(paper=paper, rule=REG.get("bib/unresolved"))
+    list(REG.get("bib/unresolved").fn(ctx))
+    assert any("Chinese Academy of Sciences" in a for a in ctx.abstentions)
 
 
 def test_bib_doi_mismatch():
@@ -204,7 +251,7 @@ def test_bib_unindexed():
     findings = run_rule(
         "bib/unindexed",
         _bib_paper(
-            [e], {"obscure2019": Resolution(Status.NOT_FOUND, queried=("crossref",))}
+            [e], {"obscure2019": _dead()}
         ),
     )
     assert len(findings) == 1
@@ -519,3 +566,14 @@ def test_a_census_is_emitted_even_when_nothing_is_wrong():
     ctx = Context(paper=p, rule=REG.get("stats/pvalue-mismatch"))
     list(REG.get("stats/pvalue-mismatch").fn(ctx))
     assert any("test statistic" in a for a in ctx.abstentions)
+
+
+def _dead():
+    """A DOI the DOI system itself denies -- the only thing that may fire
+    bib/unresolved. Missing from every index is not enough, and a fixture
+    that cannot express the difference is how the old premise survived."""
+    return Resolution(
+        Status.NOT_FOUND,
+        queried=("crossref", "doi.org"),
+        registration=Registration.DEAD,
+    )

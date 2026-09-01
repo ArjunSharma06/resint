@@ -56,6 +56,30 @@ class Status(str, Enum):
     UNKNOWN = "unknown"
 
 
+class Registration(str, Enum):
+    """What the DOI system itself says about a DOI.
+
+    Separate from :class:`Status`, which is about our *indices*. Conflating
+    the two is what made ``bib/unresolved`` biased: Crossref, OpenAlex, arXiv
+    and DBLP are metadata indices, and absence from all four was being read as
+    proof that a DOI was invented. It is not. There are ten registration
+    agencies, and Crossref is only the largest.
+
+    Two of the nine dead-DOI findings on batch-1c were DOIs registered through
+    the Chinese agency, resolving perfectly well through chndoi.org and simply
+    unknown to our four indices. Both were reported at high severity as
+    fabrication. The rule therefore fired on papers citing Chinese-language
+    literature, which is a bias, not a bug in the ordinary sense.
+
+    Three outcomes, and as everywhere else the third can never become a
+    finding.
+    """
+
+    REGISTERED = "registered"   # doi.org resolves it: the DOI exists
+    DEAD = "dead"               # doi.org 404s: there is no such DOI
+    UNCHECKED = "unchecked"     # not asked, or doi.org could not be reached
+
+
 @dataclass(frozen=True, slots=True)
 class Record:
     """A canonical bibliographic record from some index."""
@@ -101,9 +125,29 @@ class Resolution:
     queried: tuple[str, ...] = ()
     detail: str = ""
 
+    #: What doi.org said, when it was asked. Only a DOI that every index
+    #: missed is worth asking about, so this is UNCHECKED almost always.
+    registration: Registration = Registration.UNCHECKED
+
+    #: Which registration agency answered -- "Crossref", "DataCite", "JaLC",
+    #: "Chinese Academy of Sciences". Recorded so a finding can explain why
+    #: the indices missed a live DOI, and so the agencies we are blind to are
+    #: visible rather than inferred.
+    agency: str = ""
+
     @property
     def found(self) -> bool:
         return self.status is Status.FOUND
+
+    @property
+    def fabricated(self) -> bool:
+        """Whether the DOI system itself denies this DOI exists.
+
+        The only basis on which ``bib/unresolved`` may fire. Absence from our
+        indices is evidence about our coverage; a 404 from doi.org is evidence
+        about the world.
+        """
+        return self.registration is Registration.DEAD
 
     @property
     def checkable(self) -> bool:
@@ -132,12 +176,37 @@ class StaticResolver:
 
     records: dict[str, Record] = field(default_factory=dict)
     unknown: set[str] = field(default_factory=set)
+
+    #: Keys whose DOI the DOI system denies. Missing from every index is not
+    #: enough to fire ``bib/unresolved`` and must not be enough to fire it in
+    #: a test either -- a fixture that could not express the difference is how
+    #: the old premise survived a full suite for weeks.
+    dead: set[str] = field(default_factory=set)
+
+    #: Keys whose DOI is registered but held by an agency none of our indices
+    #: cover. Real reference, no readable metadata: the case that was being
+    #: reported as fabrication.
+    unindexed: set[str] = field(default_factory=set)
+
     indices: tuple[str, ...] = ("crossref", "openalex", "arxiv", "s2")
 
     def resolve(self, entry: BibEntry) -> Resolution:
         if entry.key in self.unknown:
             return Resolution(
                 Status.UNKNOWN, queried=self.indices, detail="lookup failed"
+            )
+        if entry.key in self.dead:
+            return Resolution(
+                Status.NOT_FOUND,
+                queried=self.indices + ("doi.org",),
+                registration=Registration.DEAD,
+            )
+        if entry.key in self.unindexed:
+            return Resolution(
+                Status.NOT_FOUND,
+                queried=self.indices + ("doi.org",),
+                registration=Registration.REGISTERED,
+                agency="Chinese Academy of Sciences",
             )
         record = self.records.get(entry.key)
         if record is None:

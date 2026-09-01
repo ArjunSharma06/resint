@@ -11,21 +11,30 @@ title-only findings burying 18 DOI ones -- the rule fired on three papers in
 four and read as a warning banner. Titles miss for ordinary reasons; DOIs do
 not. That half is now ``bib/unindexed``, off by default.
 
-Two guards remain, and both are about not overstating:
+The premise was wrong until 2026-09-01, not merely the code. The rule fired
+when Crossref, OpenAlex, arXiv and DBLP all missed a DOI, which reads absence
+from four *metadata indices* as proof that a registration does not exist.
+There are ten registration agencies. Two of nine findings on batch-1c were
+live DOIs registered through the Chinese agency, resolving through chndoi.org
+and unknown to all four -- reported at high severity as fabrication. The rule
+was therefore biased against papers citing Chinese-language literature.
 
-    A failed lookup is never a finding. UNKNOWN means the network answered
-    badly, not that the paper is wrong, and it is reported as unchecked.
+It now asks doi.org, which is the authority on whether a handle exists, and
+fires only on a denial from it. Three outcomes, as everywhere else:
 
-    Only indices that actually answered are named. An index that was down was
-    not a search, and saying otherwise would make an absence claim larger than
-    the evidence behind it.
+    doi.org 404s          the DOI does not exist         -> finding
+    doi.org resolves it   real, just outside our indices -> coverage note
+    doi.org unreachable   nothing is known               -> never a finding
+
+A failed lookup is still never a finding: UNKNOWN means the network answered
+badly, not that the paper is wrong.
 """
 
 from __future__ import annotations
 
 from typing import Iterator
 
-from ...resolve.base import Status
+from ...resolve.base import Registration, Status
 from ..registry import Context, rule
 
 
@@ -68,30 +77,56 @@ def check(ctx: Context) -> Iterator:
         if resolution is None or resolution.status is not Status.NOT_FOUND:
             continue
 
-        # Only the indices that actually answered. An index that was down was
-        # not a search, and naming it here would inflate the evidence behind
-        # an absence claim -- the one thing this rule must not do.
-        where = ", ".join(resolution.queried) or "any configured index"
-        missed = (
-            resolution.detail
-            if "could not be reached" in (resolution.detail or "")
-            else ""
-        )
+        # The whole rule, in one line. Absence from our indices is evidence
+        # about our coverage; only doi.org denying the handle is evidence
+        # about the world. Firing on the former reported live DOIs registered
+        # outside Crossref as fabrications -- see resolve.base.Registration.
+        if not resolution.fabricated:
+            continue
 
-        # A thesis or technical report with a DOI that fails to resolve is
-        # still a dead DOI, but such work is more often deposited somewhere
-        # these indices do not reach.
-        severity = "med" if entry.likely_unindexed else "high"
-
+        # An index being down no longer bears on whether we may fire, and it
+        # is worth saying why the old caveat is gone. The claim used to be
+        # "no index has this", so an unsearched index left a hole in it. The
+        # claim is now "the DOI system has no such handle", which one
+        # authority answers on its own: DBLP being down cannot make a
+        # registered DOI look unregistered. Eight of the nine findings on
+        # batch-1c carried that caveat while DBLP was down for the whole
+        # sweep, and under the old framing they were arguably UNKNOWN.
+        # Reported anyway, because the evidence they rest on is different now.
         yield ctx.finding(
-            severity=severity,
+            # A thesis or technical report is more often deposited where no
+            # DOI was ever minted, so a dead one there is likelier a stale
+            # citation than an invention.
+            severity="med" if entry.likely_unindexed else "high",
             message=(
                 f"[{entry.key}] {entry.render()} gives the DOI {entry.doi}, "
-                f"which does not resolve in {where}."
-                + (f" Note that {missed}." if missed else "")
+                "which the DOI system does not recognise: doi.org reports no "
+                "such registration with any agency."
             ),
             anchors=[entry.span_for("doi", "title"), entry.span],
             fix="Verify the reference exists and correct or remove the entry.",
+        )
+
+    # Live DOIs our indices cannot see. Not a defect in the paper, so never a
+    # finding -- but worth naming, because it is the only place the tool's
+    # blind spots become visible, and they fall on whole literatures at a
+    # time rather than at random.
+    outside = [
+        (e, r)
+        for e in ctx.paper.bib
+        if e.doi
+        and (r := ctx.paper.resolutions.get(e.key)) is not None
+        and r.registration is Registration.REGISTERED
+        and r.record is None
+    ]
+    if outside:
+        agencies = sorted({r.agency for _, r in outside if r.agency})
+        where = f" ({', '.join(agencies)})" if agencies else ""
+        noun = "reference" if len(outside) == 1 else "references"
+        ctx.abstain(
+            f"{len(outside)} {noun} carry a DOI that is registered and "
+            f"resolves{where} but is indexed by none of the metadata sources "
+            "this tool can read; their metadata was not checked"
         )
 
     if total:

@@ -14,7 +14,7 @@ import pytest
 from resint.ir.span import Source
 from resint.parse.bbl import looks_like_bbl, parse
 from resint.parse.document import paper_from_path
-from resint.resolve import Record, Resolution, Status, StaticResolver
+from resint.resolve import Registration, Record, Resolution, Status, StaticResolver
 from resint.rules import load_all
 from resint.rules.registry import Context
 
@@ -48,6 +48,7 @@ Everything on one line with no newblock separator at all, 2019.
 
 
 @pytest.fixture(scope="module")
+
 def parsed():
     return parse(SAMPLE, SRC)
 
@@ -138,7 +139,7 @@ def test_a_bbl_entry_without_a_doi_belongs_to_bib_unindexed(parsed):
     entry = parsed.by_key()["chollet2016"]
     paper = paper_with(
         [entry],
-        {"chollet2016": Resolution(Status.NOT_FOUND, queried=("crossref",))},
+        {"chollet2016": _dead()},
     )
 
     assert REG.get("bib/unresolved").run(Context(paper=paper)) == []
@@ -156,7 +157,7 @@ def test_a_failed_doi_from_a_bbl_is_still_high(parsed):
         Context(
             paper=paper_with(
                 [entry],
-                {"withdoi2020": Resolution(Status.NOT_FOUND, queried=("crossref",))},
+                {"withdoi2020": _dead()},
             )
         )
     )
@@ -271,3 +272,14 @@ def test_an_uncited_bib_entry_is_told_it_will_be_dropped(tmp_path):
     assert len(uncited) == 1
     assert "will not appear in the reference list" in uncited[0].message
     assert "spare2019" in uncited[0].message
+
+
+def _dead():
+    """A DOI the DOI system itself denies -- the only thing that may fire
+    bib/unresolved. Missing from every index is not enough, and a fixture
+    that cannot express the difference is how the old premise survived."""
+    return Resolution(
+        Status.NOT_FOUND,
+        queried=("crossref", "doi.org"),
+        registration=Registration.DEAD,
+    )

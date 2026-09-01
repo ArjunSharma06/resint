@@ -25,7 +25,7 @@ from dataclasses import dataclass, field, replace
 
 from ..ir.paper import BibEntry
 from ..parse.bibtex import fold
-from .base import Record, Resolution, Status, Unreachable
+from .base import Record, Registration, Resolution, Status, Unreachable
 
 USER_AGENT = "resint/0.1 (https://github.com/ArjunSharma06/resint; open-source paper linter)"
 
@@ -137,7 +137,10 @@ class Pacer:
     """
 
     #: Seconds between requests, per index.
-    DEFAULTS = {"crossref": 0.05, "openalex": 0.05, "arxiv": 3.0, "dblp": 1.0}
+    DEFAULTS = {
+        "crossref": 0.05, "openalex": 0.05, "arxiv": 3.0,
+        "dblp": 1.0, "doi.org": 0.2,
+    }
 
     def __init__(self, intervals: dict | None = None, clock=None, sleep=None):
         self.intervals = dict(self.DEFAULTS if intervals is None else intervals)
@@ -185,6 +188,11 @@ class HttpResolver:
     timeout: float = 5.0
     pacer: Pacer | None = None
 
+    #: Registration agency per DOI prefix. The agency is a property of the
+    #: prefix, so this is a cache of a fact rather than of a response.
+    _ra_cache: dict = field(default_factory=dict, repr=False)
+    _ra_lock: object = field(default_factory=threading.Lock, repr=False)
+
     def _paced(self) -> Pacer:
         return self.pacer or _DEFAULT_PACER
 
@@ -192,9 +200,13 @@ class HttpResolver:
     def indices(self) -> tuple[str, ...]:
         return ("crossref", "openalex", "arxiv", "dblp")
 
+    #: Consulted only when all four miss a DOI, so it is not in `indices`:
+    #: it answers a different question, and answers it authoritatively.
+    AUTHORITY = "doi.org"
+
     # --- transport ------------------------------------------------------
 
-    def _get(self, url: str, index: str = "crossref") -> dict | None:
+    def _get(self, url: str, index: str = "crossref") -> dict | list | None:
         """Fetch JSON. Returns None on any failure -- caller maps that to UNKNOWN."""
         # Serialise only the pacing decision, never the request itself.
         self._paced().wait(index)
@@ -340,6 +352,94 @@ class HttpResolver:
 
     # --- the protocol ---------------------------------------------------
 
+    # --- the DOI system itself -------------------------------------------
+
+    #: Content negotiation, so the request that proves a DOI exists also
+    #: returns its canonical record. That record is the only metadata source
+    #: bib/doi-mismatch has for a DOI none of our four indices can see.
+    _CSL = "application/vnd.citationstyles.csl+json"
+
+    def _doi_org(self, doi: str) -> tuple[Registration, str, Record | None]:
+        """Ask the DOI system whether a DOI exists at all.
+
+        Not a fifth index. Crossref, OpenAlex, arXiv and DBLP answer "do we
+        have metadata for this"; doi.org answers "is this handle registered",
+        and only the second question can support a claim of fabrication. See
+        :class:`Registration` for what reading the first as the second cost.
+
+        Reached only for a DOI every index already missed -- nine references
+        in seventy papers -- so the extra round trip is not worth optimising.
+        """
+        self._paced().wait(self.AUTHORITY)
+
+        agent = USER_AGENT
+        if self.mailto:
+            agent = f"{agent} mailto:{self.mailto}"
+        request = urllib.request.Request(
+            "https://doi.org/" + urllib.parse.quote(doi, safe="/:"),
+            headers={"User-Agent": agent, "Accept": self._CSL},
+        )
+
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                if response.status != 200:
+                    return Registration.UNCHECKED, "", None
+                body = response.read()
+                landed = response.url
+        except urllib.error.HTTPError as exc:
+            # The one status that answers the question asked. 404 from doi.org
+            # is the DOI system saying no such handle is registered anywhere.
+            if exc.code == 404:
+                return Registration.DEAD, "", None
+            return Registration.UNCHECKED, "", None
+        except (urllib.error.URLError, TimeoutError, OSError):
+            return Registration.UNCHECKED, "", None
+
+        # Registered, whatever came back. Agencies outside Crossref and
+        # DataCite routinely ignore the Accept header and serve their landing
+        # page instead, and an unparseable body is still proof the handle
+        # resolved. Reading it as "not registered" would rebuild the exact bug
+        # this method exists to remove.
+        return Registration.REGISTERED, self._agency(doi, landed), _from_csl(body)
+
+    def _agency(self, doi: str, landed: str) -> str:
+        """Which registration agency holds a DOI our indices could not see.
+
+        Cached by DOI *prefix*, which is what actually determines the answer:
+        every 10.16718/... handle belongs to the same agency, so a paper with
+        forty Chinese-registered references asks once rather than forty times.
+        Without that this is the slowest path in the resolver on exactly the
+        bibliographies it was added to stop accusing.
+        """
+        prefix = doi.split("/", 1)[0]
+        with self._ra_lock:
+            hit = self._ra_cache.get(prefix)
+        if hit is not None:
+            return hit
+
+        try:
+            payload = self._get(
+                "https://doi.org/doiRA/" + urllib.parse.quote(doi, safe="/:"),
+                self.AUTHORITY,
+            )
+        except Unreachable:
+            payload = None
+
+        name = ""
+        if isinstance(payload, list) and payload and isinstance(payload[0], dict):
+            name = str(payload[0].get("RA") or "").strip()
+
+        if name:
+            with self._ra_lock:
+                self._ra_cache[prefix] = name
+            return name
+
+        # doiRA did not answer. Whoever served the redirect is a worse name but
+        # a true one -- and deliberately not cached: it is a degraded answer,
+        # and caching it would keep the real agency from ever being learned for
+        # this prefix because doiRA was down once.
+        return urllib.parse.urlparse(landed or "").netloc.removeprefix("www.")
+
     def resolve(self, entry: BibEntry) -> Resolution:
         if not entry.doi and not entry.title:
             return Resolution(
@@ -382,16 +482,103 @@ class HttpResolver:
         # Naming only the indices that answered keeps the finding's claim the
         # same size as the evidence behind it -- and an index that was down is
         # said to have been down, not silently counted as a search.
-        if unreachable:
+        missed = (
+            f"{', '.join(unreachable)} could not be reached and was not searched"
+            if unreachable
+            else ""
+        )
+
+        # Every index missed it. For a DOI that settles nothing: the indices
+        # are metadata, and the question a finding rests on -- does this DOI
+        # exist -- belongs to the DOI system.
+        if entry.doi:
+            registration, agency, record = self._doi_org(normalize_doi(entry.doi))
+
+            if registration is Registration.UNCHECKED:
+                # The authority did not answer, so nothing is known about
+                # existence. Exactly the case that must never fire.
+                return Resolution(
+                    Status.UNKNOWN,
+                    queried=tuple(reached),
+                    registration=registration,
+                    detail="doi.org could not be reached, so whether this DOI is registered is unknown",
+                )
+
+            if registration is Registration.REGISTERED:
+                if record is not None:
+                    return Resolution(
+                        Status.FOUND,
+                        record=record,
+                        queried=tuple(reached) + (self.AUTHORITY,),
+                        registration=registration,
+                        agency=agency,
+                    )
+                # Live, but its agency publishes no metadata we can read. The
+                # reference is fine and there is nothing to compare it against.
+                return Resolution(
+                    Status.NOT_FOUND,
+                    queried=tuple(reached) + (self.AUTHORITY,),
+                    registration=registration,
+                    agency=agency,
+                    detail=(
+                        f"registered with {agency or 'an agency'} but indexed "
+                        "by none of the metadata sources we can read"
+                    ),
+                )
+
             return Resolution(
                 Status.NOT_FOUND,
-                queried=tuple(reached),
-                detail=(
-                    f"{', '.join(unreachable)} could not be reached and "
-                    "was not searched"
-                ),
+                queried=tuple(reached) + (self.AUTHORITY,),
+                registration=registration,
+                detail=missed,
             )
-        return Resolution(Status.NOT_FOUND, queried=tuple(reached))
+
+        return Resolution(
+            Status.NOT_FOUND, queried=tuple(reached), detail=missed
+        )
+
+
+def _from_csl(body: bytes) -> Record | None:
+    """A Record from the CSL JSON doi.org returns under content negotiation.
+
+    Returns None when there is no title, rather than a Record with an empty
+    one. An empty title scores zero similarity against anything, which
+    ``bib/doi-mismatch`` would read as the strongest possible disagreement --
+    turning a DOI we merely cannot describe into a DOI pointing at the wrong
+    paper. Absent metadata must stay absent, not become contrary metadata.
+    """
+    try:
+        item = json.loads(body.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not isinstance(item, dict):
+        return None
+
+    title = item.get("title")
+    if isinstance(title, list):
+        title = title[0] if title else ""
+    title = " ".join(str(title or "").split())
+    if not title:
+        return None
+
+    venue = item.get("container-title")
+    if isinstance(venue, list):
+        venue = venue[0] if venue else ""
+
+    issued = ((item.get("issued") or {}).get("date-parts") or [[]])[0]
+    return Record(
+        source="doi.org",
+        title=title,
+        year=str(issued[0]) if issued else "",
+        authors=tuple(
+            f"{a.get('family', '')}, {a.get('given', '')}".strip(", ")
+            for a in item.get("author") or []
+            if isinstance(a, dict) and a.get("family")
+        ),
+        venue=str(venue or ""),
+        doi=normalize_doi(str(item.get("DOI") or "")),
+        matched_by="doi",
+    )
 
 
 def _from_crossref(item: dict) -> Record | None:

@@ -209,11 +209,13 @@ The fabrication signal, and now only that. A DOI is a claim about one registered
 
 Everything weaker moved out. A title search that finds nothing used to be reported here at the same table, and across 68 real papers that meant 176 title-only findings burying 18 DOI ones -- the rule fired on three papers in four and read as a warning banner. Titles miss for ordinary reasons; DOIs do not. That half is now ``bib/unindexed``, off by default.
 
-Two guards remain, and both are about not overstating:
+The premise was wrong until 2026-09-01, not merely the code. The rule fired when Crossref, OpenAlex, arXiv and DBLP all missed a DOI, which reads absence from four *metadata indices* as proof that a registration does not exist. There are ten registration agencies. Two of nine findings on batch-1c were live DOIs registered through the Chinese agency, resolving through chndoi.org and unknown to all four -- reported at high severity as fabrication. The rule was therefore biased against papers citing Chinese-language literature.
 
-A failed lookup is never a finding. UNKNOWN means the network answered     badly, not that the paper is wrong, and it is reported as unchecked.
+It now asks doi.org, which is the authority on whether a handle exists, and fires only on a denial from it. Three outcomes, as everywhere else:
 
-Only indices that actually answered are named. An index that was down was     not a search, and saying otherwise would make an absence claim larger than     the evidence behind it.
+doi.org 404s          the DOI does not exist         -> finding     doi.org resolves it   real, just outside our indices -> coverage note     doi.org unreachable   nothing is known               -> never a finding
+
+A failed lookup is still never a finding: UNKNOWN means the network answered badly, not that the paper is wrong.
 
 **Cannot detect.** Anything without a DOI -- that is bib/unindexed, which is off by default because a failed title search says more about index coverage than about the work. It also cannot tell a fabricated DOI from one mistyped by a character, nor a DOI registered so recently that the indices have not caught up. A DOI that resolves to the wrong paper is bib/doi-mismatch's job, not this one's.
 

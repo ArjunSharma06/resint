@@ -91,7 +91,18 @@ CORPUS_RECORDS = {
 }
 
 
+#: Corpus entries whose DOI the DOI system denies. Named here rather than
+#: implied by absence from CORPUS_RECORDS, because absence from our indices is
+#: no longer grounds for bib/unresolved to fire.
+CORPUS_DEAD = ("zhang2023adaptive", "obscure2018")
+
+
 @pytest.fixture(scope="session")
 def corpus_resolver():
-    """Resolves the real entries; zhang2023adaptive and obscure2018 do not exist."""
-    return StaticResolver(records=dict(CORPUS_RECORDS))
+    """Resolves the real entries; zhang2023adaptive and obscure2018 do not exist.
+
+    "Do not exist" now has to be said explicitly. Absent from ``records`` only
+    means our indices missed it, which since 2026-09-01 is not grounds for
+    bib/unresolved to fire -- see resolve.base.Registration.
+    """
+    return StaticResolver(records=dict(CORPUS_RECORDS), dead=set(CORPUS_DEAD))

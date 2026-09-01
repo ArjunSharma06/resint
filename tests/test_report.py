@@ -16,11 +16,11 @@ from resint.rules import load_all
 from resint.ir.finding import Finding, Severity, Tier
 from resint.parse.document import paper_from_path
 from resint.report.terminal import marks, render, render_finding, _Paint
-from conftest import CORPUS_RECORDS
+from conftest import CORPUS_RECORDS, CORPUS_DEAD
 from resint.resolve import StaticResolver
 
 CORPUS = Path(__file__).resolve().parents[1] / "corpus"
-RESOLVER = StaticResolver(records=dict(CORPUS_RECORDS))
+RESOLVER = StaticResolver(records=dict(CORPUS_RECORDS), dead=set(CORPUS_DEAD))
 POSITIVE = CORPUS / "planted" / "paper.tex"
 NEGATIVE = CORPUS / "clean" / "paper.tex"
 

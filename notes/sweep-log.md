@@ -406,6 +406,49 @@ Batches 2--5 should run on the corrected code, and their findings labelled.
 
 ---
 
+## The fourth UNKNOWN-collapse was not in the code -- 2026-09-01
+
+`_get()` returned None for both "answered, no match" and "could not connect".
+`read_repo()` returned an empty world for both "no repository" and "loaded
+nothing". `fulltext.py` had the same shape a third time. All three were
+fixed by looking at a function and noticing that one return value carried two
+meanings.
+
+`bib/unresolved` was the same bug in the rule's *premise*, and no amount of
+reading the function would have found it. The code did exactly what it said:
+query four indices, and if all four come back empty, report the DOI as
+unresolved. Every branch was correct. The mistake was that "absent from
+Crossref, OpenAlex, arXiv and DBLP" had been quietly equated with "does not
+exist", and those are different propositions -- there are ten DOI registration
+agencies and our four indices cover the output of roughly one.
+
+It surfaced by reading nine findings by hand, which took ten minutes and was
+prompted by the number looking wrong rather than by any test failing. Two of
+the nine were live DOIs registered through the Chinese agency. The rule was
+reporting them at high severity as fabrication signals, which means it fired
+on papers for citing Chinese-language literature. A full test suite, a clean
+anchor audit and zero crashes all held throughout.
+
+The transferable part: the first three instances were found by inspection, so
+the natural next move was to grep for more functions of that shape. That would
+never have reached this one. **A rule can collapse two outcomes in its
+premise while every line of its implementation is correct**, and the only
+thing that catches it is reading findings against the world.
+
+What found it was reading nine findings and checking them against reality --
+ten minutes, prompted by a count that looked wrong. That is precisely the
+labelling procedure, run on nine findings instead of thirty. So labelling is
+not only a gate to pass before publishing precision numbers; it is the only
+instrument this project has for finding premise-level bugs, and the only one
+it can have, because no test written against a wrong premise will fail. The
+afternoon of labelling is not an audit of finished work. It is the primary
+bug-finding method, and it should be scheduled as one.
+
+Guarded now by a planted *negative* in `tests/test_planted.py`: a DOI that
+resolves through a non-Crossref agency must stay silent. A known-positive
+cannot catch a bias, because the bias is in what the rule says about cases it
+should never have spoken about.
+
 ## Method, revised after the deadlock — 2026-08-29
 
 The order below is what the deadlock changed. It had been "sweep, then fix";

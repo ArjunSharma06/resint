@@ -104,7 +104,7 @@ def test_unresolvable_reference_is_high_when_it_claims_a_doi(planted):
     ]
     assert len(found) == 1
     assert "zhang2023adaptive" in found[0].message
-    assert "does not resolve" in found[0].message
+    assert "does not recognise" in found[0].message
 
 
 def test_an_unindexable_thesis_is_not_reported_at_all(planted):
