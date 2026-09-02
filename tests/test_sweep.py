@@ -339,3 +339,34 @@ def test_a_missing_corpus_file_stops_the_sweep(tmp_path, capsys):
     assert _tool().main([str(tmp_path), "--ids", str(tmp_path / "nope.txt"),
                          "--out", str(tmp_path / "o.jsonl")]) == 2
     assert "no such corpus file" in capsys.readouterr().err
+
+
+# --- resolver reuse across papers ----------------------------------------
+
+
+def test_a_worker_reuses_one_resolver_across_papers():
+    """Built per paper, the reference cache is thrown away between them, and
+    a landmark DOI cited across the corpus is looked up once per citing paper.
+    At doi.org's pacing those repeats would dominate the wall clock."""
+    from resint.sweep.runner import build_resolver
+
+    spec = {"mailto": "someone@example.org"}
+    assert build_resolver(spec) is build_resolver(spec)
+
+
+def test_a_different_spec_gets_its_own_resolver():
+    from resint.sweep.runner import build_resolver
+
+    a = build_resolver({"mailto": "one@example.org"})
+    b = build_resolver({"mailto": "two@example.org"})
+    assert a is not b
+
+
+def test_no_resolve_spec_still_means_no_resolver():
+    """An empty spec is offline, and must not be memoised into something that
+    looks configured."""
+    from resint.resolve import NullResolver
+    from resint.sweep.runner import build_resolver
+
+    assert isinstance(build_resolver(None), NullResolver)
+    assert isinstance(build_resolver({}), NullResolver)
