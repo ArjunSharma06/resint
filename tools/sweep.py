@@ -130,6 +130,35 @@ def dirty_from_status(text: str) -> list[str]:
     return sorted(paths)
 
 
+def corpus_ids(path: Path) -> set[str]:
+    """The identifiers a corpus file names, comments and blanks dropped."""
+    return {
+        line.split("#", 1)[0].strip()
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.split("#", 1)[0].strip()
+    }
+
+
+def paper_id_of(path: Path) -> str:
+    """The identifier a cached paper's filename carries.
+
+    Not ``Path.stem``: that leaves ``2608.1v1.tar`` behind on a ``.tar.gz``,
+    and an arXiv id contains a dot of its own, so neither one suffix nor all
+    of them can simply be stripped. Everything up to the first suffix that
+    looks like a file extension is the id.
+    """
+    name = path.name
+    for suffix in (".tar.gz", ".tgz", ".zip", ".nxml", ".xml", ".tex"):
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def keep_listed(papers, wanted: set[str]) -> list[Path]:
+    """Only the papers a corpus file names."""
+    return [p for p in papers if paper_id_of(p) in wanted]
+
+
 def _summarise(records: list[PaperRecord]) -> None:
     total = len(records)
     crashed = [r for r in records if r.crashed]
@@ -204,6 +233,16 @@ def main(argv=None) -> int:
     parser.add_argument(
         "root", nargs="+", help="directories of papers, or single papers"
     )
+    parser.add_argument(
+        "--ids",
+        default=None,
+        help=(
+            "corpus file of identifiers; sweep only papers whose filename "
+            "stem matches one. The cache accumulates across corpora, so "
+            "without this a sweep covers whatever happens to be on disk "
+            "rather than the corpus it claims to have run on."
+        ),
+    )
     parser.add_argument("--out", default="sweep.jsonl")
     parser.add_argument(
         "--allow-dirty",
@@ -258,6 +297,22 @@ def main(argv=None) -> int:
 
     roots = [Path(r) for r in args.root]
     groups = [find_papers(r) for r in roots]
+
+    if args.ids:
+        source = Path(args.ids)
+        if not source.is_file():
+            print(f"sweep: no such corpus file: {source}", file=sys.stderr)
+            return 2
+        wanted = corpus_ids(source)
+        groups = [keep_listed(g, wanted) for g in groups]
+        found = sum(len(g) for g in groups)
+        print(f"  corpus {source.name}: {len(wanted)} listed, {found} on disk")
+        if found < len(wanted):
+            print(
+                f"  {len(wanted) - found} listed papers are not in these "
+                "roots and will not be swept",
+                file=sys.stderr,
+            )
 
     # Interleave rather than concatenate. A batch of 75 taken off the front of
     # a concatenated list would be 75 arXiv papers, and a run that only ever

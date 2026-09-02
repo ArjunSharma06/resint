@@ -297,3 +297,45 @@ def test_a_renamed_rule_is_reported_at_its_new_path():
 
 def test_a_clean_tree_is_empty():
     assert _tool().dirty_from_status("") == []
+
+
+def test_a_sweep_can_be_restricted_to_a_corpus_file(tmp_path):
+    """The cache accumulates: 619 PubMed Central articles on disk against 30
+    in the September corpus. Without this the sweep covers whatever happens to
+    be there while its record names the corpus it was supposed to run on."""
+    tool = _tool()
+    ids = tmp_path / "corpus.txt"
+    ids.write_text(
+        "\n".join(["# --- arXiv CS ---", "2608.1v1", "", "PMC9  # kept", ""]),
+        encoding="utf-8",
+    )
+    papers = [Path(n) for n in
+              ("2608.1v1.tar.gz", "2608.2v1.tar.gz", "PMC9.nxml", "PMC8.nxml")]
+
+    kept = tool.keep_listed(papers, tool.corpus_ids(ids))
+    assert [p.name for p in kept] == ["2608.1v1.tar.gz", "PMC9.nxml"]
+
+
+@pytest.mark.parametrize(
+    "name, want",
+    [
+        ("2608.1v1.tar.gz", "2608.1v1"),
+        ("2608.1v1.tgz", "2608.1v1"),
+        ("PMC13427623.nxml", "PMC13427623"),
+        ("paper.tex", "paper"),
+    ],
+)
+def test_a_papers_id_survives_its_double_suffix(name, want):
+    """Path.stem leaves "2608.1v1.tar" behind on a .tar.gz, and an arXiv id
+    carries a dot of its own, so neither one suffix nor all of them can just
+    be stripped."""
+    assert _tool().paper_id_of(Path(name)) == want
+
+
+def test_a_missing_corpus_file_stops_the_sweep(tmp_path, capsys):
+    """Sweeping everything on disk instead would produce a record that names
+    a corpus it did not run on -- the failure the flag exists to prevent."""
+    (tmp_path / "a.tex").write_text("x", encoding="utf-8")
+    assert _tool().main([str(tmp_path), "--ids", str(tmp_path / "nope.txt"),
+                         "--out", str(tmp_path / "o.jsonl")]) == 2
+    assert "no such corpus file" in capsys.readouterr().err
