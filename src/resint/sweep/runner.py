@@ -155,21 +155,46 @@ def build_provider(spec):
     return CachingProvider(inner=inner, store=DiskStore(spec.get("cache_db")))
 
 
-def build_resolver(spec):
-    """Construct a reference resolver inside the worker that will use it.
+#: One resolver per worker process, keyed by the spec that built it. Not a
+#: global for convenience -- see build_resolver.
+_RESOLVERS: dict = {}
 
-    Same reasoning as build_provider: CachingResolver holds a lock and cannot
-    be pickled across a process boundary. Each worker gets its own, which also
-    means each paces itself -- so the worker count is what bounds the request
-    rate against Crossref, not a shared budget nobody enforces.
+
+def build_resolver(spec):
+    """The reference resolver for this worker, built once and reused.
+
+    Same reasoning as build_provider for why it is constructed inside the
+    worker at all: CachingResolver holds a lock and cannot be pickled across a
+    process boundary. Each worker gets its own, which also means each paces
+    itself -- so the worker count is what bounds the request rate against
+    Crossref, not a shared budget nobody enforces.
+
+    Memoised because a worker handles many papers in its lifetime and rebuilt
+    per paper the caches were thrown away between them. Bibliographies overlap
+    heavily -- the same landmark papers are cited across a corpus -- so a fresh
+    cache per paper means re-querying DOIs already resolved, and at doi.org's
+    pacing those repeats would dominate the wall clock rather than the work.
+    The same applies to HttpResolver's registration-agency cache, which is
+    keyed by DOI prefix and is worth almost nothing if it lives for one paper.
+
+    Safe now in a way it was not before: workers used to be recycled by
+    ``max_tasks_per_child``, and removing that for the deadlock means a worker
+    lives for the whole run. The cache is bounded by the corpus, a few hundred
+    entries, not by anything unbounded.
     """
     if not spec:
         return NullResolver()
 
-    from ..resolve import CachingResolver
-    from ..resolve.http import HttpResolver
+    key = repr(sorted(spec.items()))
+    resolver = _RESOLVERS.get(key)
+    if resolver is None:
+        from ..resolve import CachingResolver
+        from ..resolve.http import HttpResolver
 
-    return CachingResolver(HttpResolver(mailto=spec.get("mailto") or None))
+        resolver = _RESOLVERS[key] = CachingResolver(
+            HttpResolver(mailto=spec.get("mailto") or None)
+        )
+    return resolver
 
 
 def check_one(
