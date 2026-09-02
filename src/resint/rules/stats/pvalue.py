@@ -185,7 +185,16 @@ def _fmt(p: float) -> str:
     cannot_detect=(
         "One-tailed tests not declared as such, and corrections for multiple "
         "comparisons that were applied but not reported. Both make a correct "
-        "p look inconsistent, so a declared tail is trusted as given."
+        "p look inconsistent, so a declared tail is trusted as given. "
+        "Most importantly, any result reported without its test statistic. "
+        "This rule recomputes p *from* the statistic, so an odds ratio or a "
+        "hazard ratio quoted with a confidence interval and a bare p is "
+        "outside it entirely -- and a large share of clinical and "
+        "epidemiological work reports results that way, so the rule reaches "
+        "a minority of that literature rather than most of it. A low finding "
+        "count there is expected rather than a malfunction. Sampled "
+        "proportions, and what they were sampled from, are in "
+        "notes/sweep-log.md."
     ),
 )
 def check(ctx: Context) -> Iterator:

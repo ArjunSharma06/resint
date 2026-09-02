@@ -1,0 +1,265 @@
+# resint corpus - 2026-09-01
+#
+# The material for the first sweep aimed at correctness rather than
+# robustness. Composed on purpose: which papers are in it decides which
+# rules can be measured at all, and the two previous sweeps were whatever
+# arXiv listed that morning.
+#
+# 180 papers: 100 arXiv CS, 30 PubMed Central, 50 arXiv
+# stats/econ/quant-bio. Every identifier here is distinct and every one is
+# a paper that actually parsed into the cache.
+#
+# THE THREE STRATA ARE NOT DRAWN THE SAME WAY, and a rate across all of
+# them means nothing. The PMC stratum is screened on its text; the two
+# arXiv strata are unscreened recency samples. Selection intensity is
+# deliberately comparable -- each is drawn from a pool of roughly 200-290
+# -- so the strata can at least be read beside one another.
+#
+# Rebuild with:
+#   python tools/fetch_arxiv.py --ids notes/corpus-2026-09.txt
+#   python tools/fetch_pmc.py   --ids notes/corpus-2026-09.txt
+# Each fetcher ignores identifiers it does not recognise.
+#
+
+# --- arXiv CS: 100 --------------------------------------------------
+# Unscreened. The most recently submitted to cs.LG, cs.CL and cs.CV at
+# listing time on 2026-09-01: 132 results, 120 of them distinct
+# (categories overlap), 5 PDF-only submissions with no source to
+# parse, and the rest kept in listing order.
+#
+# For the bib rules, the table and number rules, and the repository links
+# the repro/ rules need. Roughly a fifth of arXiv papers carry a usable
+# repo, so ~30 across both arXiv strata: too few to rate the five repro/
+# rules this round. The report must say so rather than print a rate.
+
+2608.31166v1
+2608.31157v1
+2608.31133v1
+2608.31120v1
+2608.31117v1
+2608.31108v1
+2608.31102v1
+2608.31096v1
+2608.31091v1
+2608.31079v1
+2608.31076v1
+2608.31069v1
+2608.31067v1
+2608.31052v1
+2608.31046v1
+2608.31045v1
+2608.31036v1
+2608.31029v1
+2608.31028v1
+2608.31013v1
+2608.31009v1
+2608.30987v1
+2608.30986v1
+2608.30978v1
+2608.30976v1
+2608.30974v1
+2608.30963v1
+2608.30960v1
+2608.30952v1
+2608.30946v1
+2608.30944v1
+2608.30923v1
+2608.30916v1
+2608.30910v1
+2608.30908v1
+2608.30889v1
+2608.30853v1
+2608.30819v1
+2608.30811v1
+2608.30804v1
+2608.30795v1
+2608.30792v1
+2608.30778v1
+2608.31170v1
+2608.31139v1
+2608.31128v1
+2608.31119v1
+2608.31111v1
+2608.31105v1
+2608.31100v1
+2608.31084v1
+2608.31082v1
+2608.31066v1
+2608.31059v1
+2608.31058v1
+2608.31038v1
+2608.31037v1
+2608.31035v1
+2608.31017v1
+2608.31016v1
+2608.31014v1
+2608.31007v1
+2608.30996v1
+2608.30980v1
+2608.30971v1
+2608.30968v1
+2608.30948v1
+2608.30929v1
+2608.30924v1
+2608.30912v1
+2608.30903v1
+2608.30902v1
+2608.30893v1
+2608.30884v1
+2608.30873v1
+2608.30866v1
+2608.30856v1
+2608.30842v1
+2608.30841v1
+2608.31113v1
+2608.31107v1
+2608.31106v1
+2608.31074v1
+2608.31073v1
+2608.31065v1
+2608.31053v1
+2608.31033v1
+2608.31025v1
+2608.31023v1
+2608.31022v1
+2608.31005v1
+2608.31002v1
+2608.30997v1
+2608.30964v1
+2608.30959v1
+2608.30951v1
+2608.30899v1
+2608.30896v1
+2608.30895v1
+2608.30872v1
+
+# --- PubMed Central, screened for inline NHST: 30 ----------------
+# NOT picked by topic. stats/grim, stats/pvalue-mismatch and
+# stats/significance-unsupported have never fired on a real paper, and
+# three explanations fit equally well: the rules are broken, the
+# extraction is broken, or the corpus held no inline NHST. Picking by
+# subject cannot separate them -- 'psychology journal' is not the same
+# property as 'reports t and p in running text'.
+#
+# Screened with tools/screen_nhst.py on raw text, deliberately NOT with
+# parse/extract.py: selecting with our own extractor would choose the
+# papers it already handles, and any fire rate measured afterwards would
+# be inflated by construction.
+#
+#   statistic:  t(20)  F(2,45)  r(48)  z=1.96  t=2.086  chi2  chi-square  X2
+#   p-value:    p = .03   p<0.001   P > .05   (XML entities decoded first,
+#               or every escaped 'p &lt; .001' is invisible -- that bug cost
+#               half the yield before it was found)
+#   a pair must fall within 200 characters, and 2 pairs are required, so a
+#   lone methods-section 'alpha = .05' does not qualify
+#
+# Kept in name order, NOT ranked by hit count: taking the densest N would
+# build a corpus of the most statistics-heavy papers in medicine, and any
+# rate measured on it would then read as a rate on papers generally.
+#
+# Pool: listed 2026-09-01 from five MeSH searches -- psychology,
+# clinical-trial, epidemiology, neuroscience, public-health -- 289 listed,
+# 222 available in the open-access subset. Of those 222, 30 carry inline
+# NHST and 192 do not. Hits among the kept ranged 2 to 59, median 5.
+# 9 of the 30 were already cached from a 2026-08-27 pull.
+#
+# THIS STRATUM IS SMALLER THAN INTENDED. 100 was the target; 30 is what an
+# honestly drawn pool yields at a 14% pass rate. It was not topped up by
+# trawling a larger pool, because a stratum drawn from 700 articles is not
+# comparable to one drawn from 222 and the cross-stratum reading would
+# then be meaningless. If the statistics rules fire on 0 of 30, that is the
+# result. notes/sweep-log.md records the ceiling that makes a low count
+# expected, and the table-extraction gap that makes it a floor.
+
+PMC12933109
+PMC13269942
+PMC13315715
+PMC13339429
+PMC13386814
+PMC13388792
+PMC13400840
+PMC13408611
+PMC13411940
+PMC13418541
+PMC13421437
+PMC13429939
+PMC13443947
+PMC13459727
+PMC13466016
+PMC13471491
+PMC13478914
+PMC13499291
+PMC13500836
+PMC13506945
+PMC13508283
+PMC13510895
+PMC13516360
+PMC13520407
+PMC13521579
+PMC13523000
+PMC13523253
+PMC13523283
+PMC13528902
+PMC13529068
+
+# --- arXiv stats / econ / quant-bio: 50 --------------------------
+# Unscreened, same as the CS stratum: most recent per category at listing
+# time. stat.AP, stat.ME, econ.EM, q-bio.QM, q-bio.NC. 70 results,
+# 67 distinct, 2 of them cross-listed into the CS stratum above
+# and counted there, 10 PDF-only.
+#
+# Cheap breadth, and not speculative: of the nine bib/unresolved findings
+# read by hand on batch-1c, one was an econometrics paper. These fields
+# also report statistics under conventions unlike both CS and clinical
+# medicine, which is where an over-fitted extractor shows itself.
+
+2608.31078v1
+2608.30878v1
+2608.30569v1
+2608.30093v1
+2608.29883v1
+2608.29735v1
+2608.29699v1
+2608.29642v1
+2608.29452v1
+2608.29430v1
+2608.29199v1
+2608.31138v1
+2608.31047v1
+2608.30805v1
+2608.30801v1
+2608.30644v1
+2608.30502v1
+2608.30412v1
+2608.30099v1
+2608.30018v1
+2608.29954v1
+2608.29862v1
+2608.29857v1
+2608.31085v1
+2608.30225v1
+2608.28115v1
+2608.28087v1
+2608.27155v1
+2608.26606v1
+2608.26522v1
+2608.25923v1
+2608.25901v1
+2608.25814v1
+2608.25720v1
+2608.31004v1
+2608.30175v1
+2608.30165v1
+2608.29237v1
+2608.28817v1
+2608.28788v1
+2608.28387v1
+2608.27754v1
+2608.27530v1
+2608.26586v1
+2608.26585v1
+2608.26419v1
+2608.30231v1
+2608.30008v1
+2608.29189v1
+2608.28892v1

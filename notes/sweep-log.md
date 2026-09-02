@@ -406,6 +406,77 @@ Batches 2--5 should run on the corrected code, and their findings labelled.
 
 ---
 
+## What stats/pvalue-mismatch can actually reach -- 2026-09-01
+
+Two separate measurements, taken while composing the September corpus. Both
+are samples with a stated provenance, not facts about medicine.
+
+**Sample.** 619 PubMed Central open-access articles, drawn from five MeSH
+searches -- psychology, clinical-trial, epidemiology, neuroscience,
+public-health -- fetched 2026-08-27 and 2026-09-01. Recency-ordered within
+each search, so this is recent open-access work in those fields and nothing
+broader.
+
+### One: how much of that literature reports a checkable test
+
+    359 / 619   58%   report a p-value somewhere
+    237 / 619   38%   name a test statistic at all
+    201 / 619   32%   have both, somewhere in the paper
+    102 / 619   16%   have a statistic and a p-value within 200 characters
+     85 / 619   14%   have two such pairs
+
+Stable as the sample grew: 15% at n=224, 15% at n=530, 14% at n=619. The rule
+recomputes p **from** the statistic, so a result given as an odds ratio with a
+confidence interval and a bare `p = 0.03` carries nothing to recompute from,
+and most of this literature reports results that way.
+
+So a low finding count is close to what the ceiling allows rather than a
+malfunction, and precision here will rest on a small denominator for a long
+time. `cannot_detect` states this qualitatively; the numbers stay here, where
+what they were measured on is visible.
+
+Found while screening, and only because an 8% pass rate looked wrong and the
+text got read: XML escapes `<`, so every `p &lt; .001` -- the commonest way a
+p-value is written -- was invisible to the screen. Decoding entities moved the
+pass rate from 8% to 15%.
+
+### Two: how much of *that* our extraction actually recovers
+
+The screen measures whether a paper contains a checkable pair. It does not
+measure whether `parse/extract.py` finds one, and the difference is a
+measurement of us rather than of the literature.
+
+Of the 85 papers clearing the screen:
+
+     41   contain a statistic the extractor could use (48%)
+     36   produce a non-empty paper.stats -- 88% of those 41
+    570   usable pairs visible in the raw text
+    397   StatTests recovered -- 70%
+
+The first comparison to make is the honest one. A naive reading gives "36 of
+85, 43%", but the screen is deliberately cruder than the extractor and much of
+that gap is by design: it matches the *words* "chi-square" and "χ2 test" in
+prose, and it matches `t = 0.61` with no degrees of freedom, which the
+extractor rejects on purpose because p cannot be recomputed without them.
+Comparing only what the extractor could legitimately use, recovery is 88% of
+papers and 70% of pairs.
+
+**The remaining hole is tables.** Four papers carry two or more usable pairs
+and extract zero, and all four report their statistics inside table cells:
+
+    PMC13411940   56 usable pairs, 0 extracted, 8 tables parsed
+    PMC13205985   20 usable pairs, 0 extracted, 5 tables parsed
+    PMC13363185    4 usable pairs, 0 extracted, 5 tables parsed
+    PMC13005522    4 usable pairs, 0 extracted, 1 table  parsed
+
+`extract_stats` scans `doc.text`; the tables were parsed into `paper.tables`
+and never searched. In a clinical paper the *whole results section* is often a
+table, so this is not a tail case -- one of these four alone holds 56
+checkable pairs, more than an eighth of everything recovered across the entire
+sample. Not fixed before this sweep, deliberately: it changes what the rule
+sees, and changing that mid-corpus would leave the sweep measuring two
+different rules. Recorded so the sweep's stats numbers are read as a floor.
+
 ## The fourth UNKNOWN-collapse was not in the code -- 2026-09-01
 
 `_get()` returned None for both "answered, no match" and "could not connect".

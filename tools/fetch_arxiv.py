@@ -107,7 +107,11 @@ def list_ids(categories, per_category: int, mailto: str | None) -> list[str]:
         ids.extend(found)
         print(f"  {category:<10} {len(found)} ids", file=sys.stderr)
 
-    return ids
+    # Categories overlap: a paper cross-listed to cs.LG and cs.CV answers two
+    # queries. Left in, "132 listed" and the 118 distinct papers behind it
+    # drift apart, and a corpus file built from the list claims a size the
+    # sweep does not see. fetch_pmc.list_ids has always done this.
+    return list(dict.fromkeys(ids))
 
 
 def fetch_one(arxiv_id: str, cache: Path, mailto: str | None) -> Fetched:
